@@ -1,5 +1,12 @@
 
-# pixi environments
-.pixi
+.*
+!.gitattributes
 *.egg-info
 __pycache__
+/data/database/*
+!/data/database/.gitkeep
+/data/illumina_workflow/input/*
+!/data/illumina_workflow/input/.gitkeep
+/data/illumina_workflow/output/*
+!/data/illumina_workflow/output/.gitkeep
+/work/
