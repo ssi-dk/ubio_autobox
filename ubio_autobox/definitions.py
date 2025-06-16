@@ -14,5 +14,7 @@ defs = Definitions(
             database="./data/database/iomanager.duckdb",
             schema="illumina_workflow"
         ),
-    }
+    },
+    # sensors=[illumina_workflow.unprocessed_illumina_samples_sensor],
+    # jobs=[illumina_workflow.unprocessed_illumina_samples_job],
 )

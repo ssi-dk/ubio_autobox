@@ -5,16 +5,18 @@ This asset is designed to find Illumina samples in a specified input folder.
 
 import os
 import subprocess
+from typing import Iterator
 import pandas as pd
-from dagster import (
-    Config,
-    asset,
-    AssetExecutionContext
-)
+import dagster as dg
+from dagster import Config, asset, AssetExecutionContext, AssetMaterialization, MaterializeResult, MetadataValue
+import matplotlib.pyplot as plt
+import io
+import base64
 from pydantic import field_validator
 from dagster_duckdb import DuckDBResource
 
-class illumina_workflow_config(Config):
+
+class illumina_samples_in_folder_config(Config):
     input_folder: str = (
         # fastq R1, R2 files, can be in subfolders
         "./data/illumina_workflow/input"
@@ -61,7 +63,7 @@ class illumina_workflow_config(Config):
             raise FileNotFoundError(
                 f"Output directory '{output_dir}' does not exist. Please provide a valid path."
             )
-        if not v.endswith(('.tsv', '.csv', '.txt')):
+        if not v.endswith((".tsv", ".csv", ".txt")):
             raise ValueError(
                 f"Output file '{v}' must have a valid extension (.tsv, .csv, .txt)."
             )
@@ -74,7 +76,7 @@ class illumina_workflow_config(Config):
 )
 def illumina_samples_in_folder(
     context: AssetExecutionContext,
-    config: illumina_workflow_config
+    config: illumina_samples_in_folder_config
 ) -> pd.DataFrame:
     """
     Find Illumina samples in the input folder using bactopia prepare.
@@ -134,7 +136,9 @@ def new_illumina_samples(
                 new_samples = current_samples
             else:
                 existing_samples = {row[0] for row in existing_samples}
-                new_samples = current_samples[~current_samples['sample'].isin(existing_samples)]
+                new_samples = current_samples[
+                    ~current_samples["sample"].isin(existing_samples)
+                ]
                 # change from Series to DataFrame
                 new_samples = new_samples.reset_index(drop=True)
 
@@ -145,9 +149,11 @@ def new_illumina_samples(
                     conn,
                     if_exists="append",
                     index=False,
-                    method="multi"
+                    method="multi",
                 )
-                context.log.info(f"Inserted {len(new_samples)} new samples into DuckDB.")
+                context.log.info(
+                    f"Inserted {len(new_samples)} new samples into DuckDB."
+                )
             else:
                 context.log.info("No new samples to insert into DuckDB.")
     # return new_samples
@@ -172,7 +178,8 @@ def unprocessed_illumina_samples(
         ).fetchdf()
 
         if not unprocessed_samples.empty:
-            context.log.info(f"Found {len(unprocessed_samples)} unprocessed samples.")
+            context.log.info(
+                f"Found {len(unprocessed_samples)} unprocessed samples.")
             for index, row in unprocessed_samples.iterrows():
                 context.log.info(f"Unprocessed sample: {row['sample']}")
         else:
@@ -194,36 +201,182 @@ def run_bactopia(r1, r2, sample, species, genome_size, runtype, extra):
         return False
 
 
+
 @asset(
     deps=[unprocessed_illumina_samples],
     group_name="illumina_workflow",
-    kinds={"bactopia"},
 )
 def run_unprocessed_illumina_samples(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
-    unprocessed_illumina_samples: pd.DataFrame
-) -> None:
+    unprocessed_illumina_samples: pd.DataFrame,
+) -> MaterializeResult:
     """
     Run Bactopia on unprocessed Illumina samples.
     """
     with duckdb.get_connection() as conn:
+        processed_samples = 0
+        unprocessed_samples = 0
         for index, row in unprocessed_illumina_samples.iterrows():
             success = run_bactopia(
-                r1=row['r1'],
-                r2=row['r2'],
-                sample=row['sample'],
-                species=row['species'],
-                genome_size=row['genome_size'],
-                runtype=row['runtype'],
-                extra=row['extra']
+                r1=row["r1"],
+                r2=row["r2"],
+                sample=row["sample"],
+                species=row["species"],
+                genome_size=row["genome_size"],
+                runtype=row["runtype"],
+                extra=row["extra"],
             )
             if success:
                 conn.execute(
                     "UPDATE seqsample.illumina_samples SET processed = TRUE WHERE sample = ?",
-                    (row['sample'],)
+                    (row["sample"],),
                 )
                 context.log.info(f"Processed sample {row['sample']}.")
+                processed_samples += 1
+                # yield AssetMaterialization(
+                #     asset_key=f"illumina_workflow/{row['sample']}",
+                #     description=f"Processed sample {row['sample']} with Bactopia.",
+                #     metadata={
+                #         "sample": row["sample"],
+                #         "species": row["species"],
+                #         "genome_size": row["genome_size"],
+                #         "runtype": row["runtype"],
+                #         "extra": row["extra"],
+                #     },
+                # )
             else:
                 context.log.error(f"Failed to process sample {row['sample']}.")
-                return False
+                # yield AssetMaterialization(
+                #     asset_key="illumina_workflow/no_unprocessed_samples",
+                #     description="No unprocessed Illumina samples found.",
+                # )
+            unprocessed_samples += 1
+        return MaterializeResult(
+            metadata={
+                "processed_samples": MetadataValue.int(processed_samples),
+                "unprocessed_samples": MetadataValue.int(unprocessed_samples),
+            },
+        )
+
+
+
+# #I want to do the same as above but using a dynamic partition for each sample
+# sample_partitions = dg.DynamicPartitionsDefinition(name="sample")
+
+# @asset(
+#     deps=[unprocessed_illumina_samples],
+#     group_name="illumina_workflow",
+#     partitions_def=sample_partitions
+# )
+# def run_unprocessed_illumina_sample(
+#     context: AssetExecutionContext,
+#     duckdb: DuckDBResource,
+#     unprocessed_illumina_samples: pd.DataFrame,
+# ) -> Iterator[AssetMaterialization]:
+#     """
+#     Run Bactopia on unprocessed Illumina samples.
+#     """
+#     sample = context.partition_key
+#     with duckdb.get_connection() as conn:
+#         # find sample by sample name
+#         row = conn.execute(
+#             "SELECT * FROM seqsample.illumina_samples WHERE sample = ? AND processed = FALSE",
+#             (sample,),
+#         ).fetchone()
+
+#         success = run_bactopia(
+#             r1=row["r1"],
+#             r2=row["r2"],
+#             sample=row["sample"],
+#             species=row["species"],
+#             genome_size=row["genome_size"],
+#             runtype=row["runtype"],
+#             extra=row["extra"],
+#         )
+
+#         if success:
+#             conn.execute(
+#                 "UPDATE seqsample.illumina_samples SET processed = TRUE WHERE sample = ?",
+#                 (row["sample"],),
+#             )
+#             context.log.info(f"Processed sample {row['sample']}.")
+#             return AssetMaterialization(
+#                 asset_key=f"illumina_workflow/{row['sample']}",
+#                 description=f"Processed sample {row['sample']} with Bactopia.",
+#                 metadata={
+#                     "sample": row["sample"],
+#                     "species": row["species"],
+#                     "genome_size": row["genome_size"],
+#                     "runtype": row["runtype"],
+#                     "extra": row["extra"],
+#                 },
+#             )
+#         else:
+#             context.log.error(f"Failed to process sample {row['sample']}.")
+#             return AssetMaterialization(
+#                 asset_key="illumina_workflow/no_unprocessed_samples",
+#                 description="No unprocessed Illumina samples found.",
+#             )
+
+
+
+# @dg.sensor(job="run_unprocessed_illumina_sample_job")
+# def unprocessed_illumina_samples_sensor(
+#     context: AssetExecutionContext,
+#     duckdb: DuckDBResource,
+# ) -> dg.SensorResult:
+#     """
+#     Sensor to trigger the run_unprocessed_illumina_samples asset for each unprocessed sample.
+#     """
+#     with duckdb.get_connection() as conn:
+#         unprocessed_samples = conn.execute(
+#             "SELECT * FROM seqsample.illumina_samples WHERE processed = FALSE"
+#         ).fetchdf()
+#         # convert unprocessed_samples to a list of sample names
+#         sample_names = unprocessed_samples["sample"].tolist()
+
+#         return dg.SensorResult(
+#             dynamic_partitions_requests=[sample_partitions.build_add_request(sample_names)],
+#         )
+
+@asset(
+    group_name="illumina_workflow",
+    kinds={"report"},
+)
+def illumina_samples_plot(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+) -> MaterializeResult:
+    """
+    Generate a report of processed and unprocessed Illumina samples.
+    """
+    with duckdb.get_connection() as conn:
+        processed_samples = conn.execute(
+            "SELECT * FROM seqsample.illumina_samples WHERE processed = TRUE"
+        ).fetchdf()
+        unprocessed_samples = conn.execute(
+            "SELECT * FROM seqsample.illumina_samples WHERE processed = FALSE"
+        ).fetchdf()
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(
+            ["Processed", "Unprocessed"],
+            [len(processed_samples), len(unprocessed_samples)],
+            color=["green", "red"],
+        )
+        plt.title("Illumina Samples Report")
+        plt.xlabel("Sample Status")
+        plt.ylabel("Number of Samples")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format="png")
+        image_data = base64.b64encode(buffer.getvalue()).decode()
+
+        md_content = f"![img](data:image/png;base64,{image_data})"
+
+        return MaterializeResult(
+            metadata={"plot": MetadataValue.md(md_content)},
+        )
