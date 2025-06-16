@@ -3,17 +3,22 @@ Illumina Workflow Asset
 This asset is designed to find Illumina samples in a specified input folder.
 """
 
+import base64
+import io
 import os
 import subprocess
-from typing import Iterator
-import pandas as pd
-import dagster as dg
-from dagster import Config, asset, AssetExecutionContext, AssetMaterialization, MaterializeResult, MetadataValue
+
 import matplotlib.pyplot as plt
-import io
-import base64
-from pydantic import field_validator
+import pandas as pd
+from dagster import (
+    AssetExecutionContext,
+    Config,
+    MaterializeResult,
+    MetadataValue,
+    asset,
+)
 from dagster_duckdb import DuckDBResource
+from pydantic import field_validator
 
 
 class illumina_samples_in_folder_config(Config):
@@ -75,8 +80,7 @@ class illumina_samples_in_folder_config(Config):
     kinds={"source", "ingest"},
 )
 def illumina_samples_in_folder(
-    context: AssetExecutionContext,
-    config: illumina_samples_in_folder_config
+    context: AssetExecutionContext, config: illumina_samples_in_folder_config
 ) -> pd.DataFrame:
     """
     Find Illumina samples in the input folder using bactopia prepare.
@@ -178,9 +182,8 @@ def unprocessed_illumina_samples(
         ).fetchdf()
 
         if not unprocessed_samples.empty:
-            context.log.info(
-                f"Found {len(unprocessed_samples)} unprocessed samples.")
-            for index, row in unprocessed_samples.iterrows():
+            context.log.info(f"Found {len(unprocessed_samples)} unprocessed samples.")
+            for _index, row in unprocessed_samples.iterrows():
                 context.log.info(f"Unprocessed sample: {row['sample']}")
         else:
             context.log.info("No unprocessed samples found.")
@@ -201,7 +204,6 @@ def run_bactopia(r1, r2, sample, species, genome_size, runtype, extra):
         return False
 
 
-
 @asset(
     deps=[unprocessed_illumina_samples],
     group_name="illumina_workflow",
@@ -217,7 +219,7 @@ def run_unprocessed_illumina_samples(
     with duckdb.get_connection() as conn:
         processed_samples = 0
         unprocessed_samples = 0
-        for index, row in unprocessed_illumina_samples.iterrows():
+        for _index, row in unprocessed_illumina_samples.iterrows():
             success = run_bactopia(
                 r1=row["r1"],
                 r2=row["r2"],
@@ -258,7 +260,6 @@ def run_unprocessed_illumina_samples(
                 "unprocessed_samples": MetadataValue.int(unprocessed_samples),
             },
         )
-
 
 
 # #I want to do the same as above but using a dynamic partition for each sample
@@ -320,7 +321,6 @@ def run_unprocessed_illumina_samples(
 #             )
 
 
-
 # @dg.sensor(job="run_unprocessed_illumina_sample_job")
 # def unprocessed_illumina_samples_sensor(
 #     context: AssetExecutionContext,
@@ -339,6 +339,7 @@ def run_unprocessed_illumina_samples(
 #         return dg.SensorResult(
 #             dynamic_partitions_requests=[sample_partitions.build_add_request(sample_names)],
 #         )
+
 
 @asset(
     group_name="illumina_workflow",
