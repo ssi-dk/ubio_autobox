@@ -1,0 +1,20 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+include pyproject.toml
+include pixi.toml
+include pixi.lock
+recursive-include ubio_autobox *.py
+recursive-include ubio_autobox_tests *.py
+prune .git
+prune .pytest_cache
+prune __pycache__
+prune *.egg-info
+prune .tmp_dagster_home_*
+prune work
+prune data/database/*.duckdb
+prune data/illumina_workflow/input/*
+prune data/illumina_workflow/output/*
+global-exclude *.pyc
+global-exclude .DS_Store

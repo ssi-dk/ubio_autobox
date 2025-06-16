@@ -1,0 +1,2 @@
+# This file ensures the database directory is tracked by git
+# DuckDB files are ignored, but the directory structure should exist
