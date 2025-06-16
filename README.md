@@ -46,7 +46,7 @@ ubio_autobox/
 
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/ssi-dk/ubio_autobox/
    cd ubio_autobox
    ```
 
