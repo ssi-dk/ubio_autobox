@@ -49,13 +49,14 @@ class SqlAlchemyResultRepository:
     """Canonical persistence adapter for samples and scientific results."""
 
     def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
         self.engine: Engine = create_engine(database_url)
         self._sessions = sessionmaker(
             bind=self.engine, expire_on_commit=False, class_=Session
         )
 
     def initialize(self) -> None:
-        migrate_database(str(self.engine.url))
+        migrate_database(self._database_url)
 
     def register_sample(self, sample: ValidatedSample) -> RegisteredSample:
         with self._sessions() as session:

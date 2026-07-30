@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path
+from unittest import mock
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+
+from ubio_autobox.persistence import SqlAlchemyResultRepository
 
 
 def test_initial_migration_upgrades_empty_database(tmp_path: Path, monkeypatch) -> None:
@@ -24,3 +27,13 @@ def test_migration_environment_is_packaged() -> None:
     assert migration_root.joinpath("alembic.ini").is_file()
     assert migration_root.joinpath("script.py.mako").is_file()
     assert migration_root.joinpath("versions", "0001_normalized_results.py").is_file()
+
+
+def test_repository_migration_preserves_exact_database_url(tmp_path: Path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'exact.sqlite'}?mode=rwc"
+    repository = SqlAlchemyResultRepository(database_url)
+
+    with mock.patch("ubio_autobox.persistence.repository.migrate_database") as migrate:
+        repository.initialize()
+
+    migrate.assert_called_once_with(database_url)
