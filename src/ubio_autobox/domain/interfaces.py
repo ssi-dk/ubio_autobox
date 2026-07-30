@@ -43,6 +43,12 @@ class ResultRepository(Protocol):
 
     def get_analysis_bundle(self, analysis_id: UUID) -> dict[str, object]: ...
 
+    def get_analysis_status(
+        self,
+        sample_id: UUID,
+        pipeline_config_fingerprint: str,
+    ) -> dict[str, object] | None: ...
+
     def list_successful_analysis_ids(self) -> list[UUID]: ...
 
 

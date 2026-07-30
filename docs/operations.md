@@ -17,7 +17,7 @@ the same artifact tree snapshot and configuration fingerprint information.
 2. Restore artifacts at paths compatible with recorded file URIs, or perform a
    reviewed URI migration.
 3. Set `UBIO_DATABASE_URL` and storage roots.
-4. Run `alembic upgrade head`.
+4. Run `ubio-autobox migrate --config <config.yml>`.
 5. Run `ubio-autobox status` and verify a sample of artifact SHA-256 values.
 6. Start Dagster only after scientific state is consistent.
 

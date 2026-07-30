@@ -9,20 +9,38 @@ from uuid import UUID
 import typer
 
 from ubio_autobox.config import load_settings
+from ubio_autobox.domain.models import AnalysisStatus
 from ubio_autobox.execution.factory import build_processor, build_repository
 from ubio_autobox.ingest import FilesystemInputRegistry, StabilityCursor
+from ubio_autobox.persistence import migrate_database
 from ubio_autobox.projection import AtbProjector
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 
+ANALYSIS_COMPLETE_EXIT = 0
+ANALYSIS_TERMINAL_FAILURE_EXIT = 10
+ANALYSIS_RETRYABLE_EXIT = 20
+
+
+def _migrate(config: Path | None) -> None:
+    settings = load_settings(config)
+    settings.ensure_runtime_directories()
+    migrate_database(settings.database.url)
+    typer.echo("Result database migrated.")
+
+
+@app.command("migrate")
+def migrate(config: Path | None = None) -> None:
+    """Upgrade the result database through the packaged Alembic revisions."""
+
+    _migrate(config)
+
 
 @app.command("init-db")
 def init_database(config: Path | None = None) -> None:
-    """Create the result schema when it is absent."""
+    """Compatibility alias for ``migrate``."""
 
-    settings = load_settings(config)
-    build_repository(settings)
-    typer.echo("Result database initialized.")
+    _migrate(config)
 
 
 @app.command()
@@ -78,6 +96,59 @@ def status(config: Path | None = None) -> None:
     settings = load_settings(config)
     repository = build_repository(settings)
     typer.echo(json.dumps(repository.list_samples(), indent=2, default=str))
+
+
+@app.command("analysis-status")
+def analysis_status(
+    sample_id: UUID,
+    config: Path | None = None,
+    json_output: bool = typer.Option(False, "--json", help="Emit stable JSON."),
+) -> None:
+    """Report current-pipeline analysis state using deployment-safe exit codes."""
+
+    settings = load_settings(config)
+    repository = build_repository(settings)
+    result = repository.get_analysis_status(
+        sample_id,
+        settings.pipeline_fingerprint(),
+    )
+    if result is None:
+        payload: dict[str, object] = {
+            "sample_id": str(sample_id),
+            "sample_key": None,
+            "sample_status": "absent",
+            "pipeline_config_fingerprint": settings.pipeline_fingerprint(),
+            "analysis_id": None,
+            "status": "absent",
+            "attempt": None,
+            "dagster_run_id": None,
+            "error_summary": None,
+            "started_at": None,
+            "completed_at": None,
+        }
+    else:
+        payload = result
+
+    current_status = str(payload["status"])
+    if json_output:
+        typer.echo(json.dumps(payload, default=str, sort_keys=True))
+    else:
+        typer.echo(
+            f"{payload['sample_id']} {current_status} "
+            f"{payload.get('analysis_id') or '-'}"
+        )
+
+    if current_status == AnalysisStatus.SUCCEEDED.value:
+        exit_code = ANALYSIS_COMPLETE_EXIT
+    elif current_status in {
+        AnalysisStatus.FAILED.value,
+        AnalysisStatus.INVALID.value,
+    }:
+        exit_code = ANALYSIS_TERMINAL_FAILURE_EXIT
+    else:
+        exit_code = ANALYSIS_RETRYABLE_EXIT
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @app.command("export-dataframe")

@@ -1,8 +1,17 @@
 .git
 .pixi
 .ubio
+.env
 artifacts
 incoming
+private
+runtimes
 tests
 __pycache__
 *.duckdb
+*.dmnd
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.syldb

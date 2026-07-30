@@ -24,6 +24,7 @@ from ubio_autobox.domain.models import (
     ValidatedSample,
 )
 
+from .migration import migrate_database
 from .models import (
     AnalysisRunModel,
     ArtifactModel,
@@ -54,7 +55,7 @@ class SqlAlchemyResultRepository:
         )
 
     def initialize(self) -> None:
-        Base.metadata.create_all(self.engine)
+        migrate_database(str(self.engine.url))
 
     def register_sample(self, sample: ValidatedSample) -> RegisteredSample:
         with self._sessions() as session:
@@ -379,6 +380,56 @@ class SqlAlchemyResultRepository:
                 )
             )
             return [self._model_dict(row) for row in rows]
+
+    def get_analysis_status(
+        self,
+        sample_id: UUID,
+        pipeline_config_fingerprint: str,
+    ) -> dict[str, object] | None:
+        """Return the current-pipeline analysis state for one sample."""
+
+        with self._sessions() as session:
+            sample = session.get(SampleModel, str(sample_id))
+            if sample is None:
+                return None
+            analysis = session.scalar(
+                select(AnalysisRunModel)
+                .where(
+                    AnalysisRunModel.sample_id == sample.sample_id,
+                    AnalysisRunModel.pipeline_config_fingerprint
+                    == pipeline_config_fingerprint,
+                )
+                .order_by(AnalysisRunModel.created_at.desc())
+            )
+            result: dict[str, object] = {
+                "sample_id": sample.sample_id,
+                "sample_key": sample.sample_key,
+                "sample_status": sample.status,
+                "pipeline_config_fingerprint": pipeline_config_fingerprint,
+                "analysis_id": None,
+                "status": sample.status,
+                "attempt": None,
+                "dagster_run_id": None,
+                "error_summary": None,
+                "started_at": None,
+                "completed_at": None,
+            }
+            if sample.status == AnalysisStatus.INVALID.value:
+                result["status"] = AnalysisStatus.INVALID.value
+                return result
+            if analysis is not None:
+                result.update(
+                    {
+                        "analysis_id": analysis.analysis_id,
+                        "status": analysis.status,
+                        "attempt": analysis.attempt,
+                        "dagster_run_id": analysis.dagster_run_id,
+                        "error_summary": analysis.error_summary,
+                        "started_at": analysis.started_at,
+                        "completed_at": analysis.completed_at,
+                    }
+                )
+            return result
 
     def list_successful_analysis_ids(self) -> list[UUID]:
         with self._sessions() as session:

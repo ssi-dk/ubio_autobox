@@ -2,24 +2,36 @@
 
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
+from alembic.ddl.impl import DefaultImpl
 from sqlalchemy import engine_from_config, pool
 
-from ubio_autobox.config import load_settings
 from ubio_autobox.persistence import Base
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-config.set_main_option("sqlalchemy.url", load_settings().database.url)
+
+
+class DuckDBImpl(DefaultImpl):
+    """Use Alembic's portable default DDL behavior for DuckDB."""
+
+    __dialect__ = "duckdb"
+    transactional_ddl = True
+
+
+database_url = config.attributes.get("database_url") or os.getenv("UBIO_DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=database_url or config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

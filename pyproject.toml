@@ -71,6 +71,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 ubio_autobox = [
     "execution/*.py",
+    "migrations/alembic.ini",
+    "migrations/script.py.mako",
     "projection/schemas/*.json",
 ]
 

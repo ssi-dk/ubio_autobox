@@ -14,15 +14,12 @@ bactopia:
   runner: subprocess
   max_cpus: 4
   max_memory: 16.GB
-  # Optional provenance for a site wrapper image. Bactopia task containers are
-  # selected by the pinned workflow and captured from Nextflow traces.
   image: null
   container_digest: null
   nextflow_version: 26.04.6
   database_versions: {}
-  # Set these when using site-managed databases, for example:
-  # checkm2_args: [--checkm2_db=/srv/ubio-autobox/cache/checkm2]
-  # sylph_args: [--sylph_db=/srv/ubio-autobox/cache/sylph/gtdb.syldb]
+  checkm2_args: []
+  sylph_args: []
 execution:
   deployment: local
   container_runtime: docker

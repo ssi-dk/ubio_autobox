@@ -10,12 +10,10 @@ sensor:
 bactopia:
   version: 4.0.0
   executable: bactopia
-  # Bactopia names this profile "singularity"; Nextflow uses Apptainer.
   profile: singularity
   runner: subprocess
   max_cpus: 16
   max_memory: 64.GB
-  # Set these when `executable` is a site wrapper around a deployed SIF.
   image: null
   container_digest: null
   nextflow_version: 26.04.6
@@ -39,6 +37,5 @@ slurm:
   cpus: 16
   memory: 64G
   remote_base: /shared/ubio-autobox/dagster-slurm
-  extra_sbatch_args:
-    - --reservation=optional-reservation
+  extra_sbatch_args: []
 atb_schema_version: 2025-05

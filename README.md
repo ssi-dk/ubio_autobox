@@ -65,9 +65,12 @@ invalidated and must be submitted as a new batch/sample.
 
 ```bash
 pixi install
-pixi run ubio-autobox init-db
+pixi run ubio-autobox migrate
 pixi run dagster-dev
 ```
+
+`init-db` remains a compatibility alias for the same idempotent packaged
+Alembic migration path.
 
 Dagster scans every 30 seconds. Each registered `sample_id` becomes a dynamic
 partition and receives an idempotent run key derived from the sample UUID,
@@ -93,28 +96,42 @@ The default scientific database URL is
 `duckdb:///<data-root>/state/ubio.duckdb`. Override it with
 `UBIO_DATABASE_URL`; SQL Server support is installed with the `mssql` extra.
 
-## Docker Compose
+## Deployment interface
 
-Copy `deploy/.env.example` to `deploy/.env`, set `UBIO_DATA_ROOT` to an
-absolute host path, and run:
+Deployment topology is owned outside this public application repository. A
+deployment workspace is expected to provide sibling `app`, `deploy`,
+`automation`, `private`, and `runtimes` paths. The application-owned image is
+built from the repository root with:
 
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up --build
+docker build -f packaging/docker/Dockerfile -t ubio-autobox:<git-sha> .
 ```
 
-Compose runs the Dagster webserver, daemon, user-code service, and PostgreSQL
-for Dagster operational state. Scientific results still use DuckDB by default.
-The Docker socket is mounted so Nextflow can launch pinned scientific
-containers. This grants the user-code service host-level Docker control; use a
-dedicated host or a socket proxy with an appropriately narrow policy.
+Deploy tooling should use these stable operational commands:
 
-The data root is mounted at the same absolute path inside user code because
-sibling containers launched through the host Docker daemon must resolve the
-same paths.
+```bash
+ubio-autobox validate-config --config /path/to/config.yml
+ubio-autobox migrate --config /path/to/config.yml
+ubio-autobox analysis-status <sample-id> --config /path/to/config.yml --json
+```
+
+`analysis-status` returns `0` for a succeeded current-pipeline analysis, `10`
+for terminal `failed` or `invalid` state, and `20` while the sample or analysis
+is absent, validated, queued, or running.
+
+When Bactopia uses the Docker profile, control-plane containers need the host
+Docker socket and host datasets/reference paths mounted at identical absolute
+paths. Docker-socket access is effectively host-level control. Restrict the
+deployment host and operators accordingly, or use a narrowly configured socket
+proxy.
+
+See [`docs/deployment-interface.md`](docs/deployment-interface.md) for the
+complete public contract. Compose, Dagster instance/workspace configuration,
+secrets, and target policy belong to the private deploy repository.
 
 ## Slurm
 
-Start from `deploy/config.slurm.example.yaml` and set `UBIO_CONFIG_FILE`.
+Start from `examples/config.slurm.yaml` and set `UBIO_CONFIG_FILE`.
 Slurm mode uses `dagster-slurm` per-asset execution. The five logical assets
 are represented by one graph-backed compute boundary, so a sample submits one
 allocation. Bactopia/Nextflow run locally inside that allocation; nested Slurm
