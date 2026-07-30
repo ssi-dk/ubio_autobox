@@ -4,6 +4,28 @@
 **Canonical repository:** [ssi-dk/ubio_autobox](https://github.com/ssi-dk/ubio_autobox)  
 **Git transport:** `git@github.com:ssi-dk/ubio_autobox.git`
 
+## Implementation status — 2026-07-29
+
+The rebuild described below is implemented on
+`codex/rebuild-ubio-autobox`. The archive branch and tag are verified on the
+remote, the old wrapper repository is preserved as a verified local bundle,
+and the source-layout implementation passes formatting, linting, strict
+typing, 27 unit/contract/integration tests, Alembic migration coverage, and
+Dagster definition loading.
+
+Two deployment acceptance checks require infrastructure unavailable in this
+workspace and remain explicit operator smoke tests:
+
+- Run a real tiny-read Bactopia 4 analysis through Docker Compose on a Linux
+  Docker host.
+- Submit the fixture payload to the target Slurm cluster and confirm one
+  allocation plus output parity.
+
+The fake-runner tracer bullet exercises the same lifecycle, persistence,
+artifact publication, and ATB projection paths in both local and synthetic
+Slurm configurations. It does not stand in for those two infrastructure
+checks.
+
 ## 1. Mandatory Git safety and workspace setup
 
 This phase must complete before project code changes.
@@ -102,6 +124,22 @@ PublicHealthBox/
 Use Python 3.11. Consolidate packaging and tool settings into
 `pyproject.toml`. Retain Pixi for development commands while keeping Bactopia
 in pinned Linux containers.
+
+### Version policy
+
+The numeric versions in this plan are compatibility baselines, not a request
+to preserve outdated dependencies. At implementation and each release, use
+the newest mutually compatible versions and lock the resolved environment.
+As verified on 2026-07-29:
+
+- Bactopia 4.0.0 is the current documented Bactopia contract.
+- Nextflow 26.04.6 is the current compatible Linux resolution.
+- `dagster-slurm` 1.15.1 is current and constrains Dagster to 1.13.x.
+- AllTheBacteria 2025-05 is the latest complete aggregate metadata model.
+
+Upgrades require fixture-backed CLI/output, orchestration, and schema contract
+tests. Production versions remain explicit and reproducible rather than
+floating at runtime.
 
 ## 4. Input contract
 

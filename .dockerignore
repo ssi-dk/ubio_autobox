@@ -1,0 +1,8 @@
+.git
+.pixi
+.ubio
+artifacts
+incoming
+tests
+__pycache__
+*.duckdb

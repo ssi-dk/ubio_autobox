@@ -1,120 +1,141 @@
 [project]
-name = "ubio_autobox"
-version = "0.1.0"
-description = "Automated bioinformatics pipeline for processing Illumina sequencing data using Bactopia"
+name = "ubio-autobox"
+version = "0.2.0"
+description = "Automated Bactopia processing with Dagster and AllTheBacteria-compatible outputs"
 readme = "README.md"
-license = {file = "LICENSE"}
-authors = [
-    {name = "Kim Ng", email = "kimleeng@gmail.com"},
-]
-maintainers = [
-    {name = "SSI-DK", email = "kimleeng@gmail.com"},
-]
-requires-python = ">=3.9,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "SSI-DK" }]
+requires-python = ">=3.11,<3.15"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-keywords = ["bioinformatics", "genomics", "illumina", "bactopia", "dagster", "pipeline"]
 dependencies = [
-    "dagster>=1.10.19,<2",
-    "dagster-cloud",
-    "dagster-duckdb>=0.26.19",
-    "dagster-duckdb-pandas>=0.26.19",
-    "duckdb>=1.3.0",
-    "matplotlib>=3.10.0",
-    "pandas>=1.5.0",
-    "pydantic>=2.0.0",
+    "alembic>=1.14,<2",
+    "dagster>=1.13,<1.14",
+    "dagster-pipes>=1.13,<1.14",
+    "dagster-slurm>=1.15.1,<1.16",
+    "duckdb>=1.3,<2",
+    "duckdb-engine>=0.17,<1",
+    "pandas>=2.2,<4",
+    "pyarrow>=18,<30",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+    "PyYAML>=6,<7",
+    "SQLAlchemy>=2.0,<3",
+    "typer>=0.15,<1",
 ]
+
+[project.optional-dependencies]
+local = [
+    "dagster-postgres>=0.29,<0.30",
+    "dagster-webserver>=1.13,<1.14",
+    "psycopg2-binary>=2.9,<3",
+]
+mssql = ["pyodbc>=5,<6"]
+dev = [
+    "coverage[toml]>=7,<8",
+    "mypy>=1.14,<2",
+    "pandas-stubs>=2.2,<4",
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.9,<1",
+]
+
+[project.scripts]
+ubio-autobox = "ubio_autobox.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/ssi-dk/ubio_autobox"
 Repository = "https://github.com/ssi-dk/ubio_autobox.git"
 Issues = "https://github.com/ssi-dk/ubio_autobox/issues"
-Changelog = "https://github.com/ssi-dk/ubio_autobox/blob/main/CHANGELOG.md"
-Documentation = "https://github.com/ssi-dk/ubio_autobox#readme"
-
-[project.optional-dependencies]
-dev = [
-    "dagster-webserver", 
-    "pytest",
-]
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ubio_autobox = [
+    "execution/*.py",
+    "projection/schemas/*.json",
+]
 
 [tool.dagster]
 module_name = "ubio_autobox.definitions"
 code_location_name = "ubio_autobox"
 
-[tool.setuptools.packages.find]
-exclude=["ubio_autobox_tests"]
-
-[tool.mypy]
-python_version = "3.9"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
-
-[[tool.mypy.overrides]]
-module = [
-    "dagster.*",
-    "dagster_duckdb.*",
-    "dagster_duckdb_pandas.*", 
-    "duckdb.*",
-    "matplotlib.*",
-]
-ignore_missing_imports = true
-
 [tool.pytest.ini_options]
-testpaths = ["ubio_autobox_tests"]
-python_files = ["test_*.py"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--verbose",
-]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
+    "integration: requires local external services",
+    "bactopia: requires Bactopia and its reference data",
+    "slurm: requires a Slurm deployment",
 ]
 
 [tool.coverage.run]
 source = ["ubio_autobox"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-]
+branch = true
 
 [tool.coverage.report]
+show_missing = true
+skip_covered = true
 exclude_lines = [
     "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
+    "if TYPE_CHECKING:",
     "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["ubio_autobox"]
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "dagster.*",
+    "dagster_pipes.*",
+    "dagster_slurm.*",
+    "pyarrow.*",
+    "yaml.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "N",
+    "S",
+    "UP",
+]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/*" = ["N999"]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"

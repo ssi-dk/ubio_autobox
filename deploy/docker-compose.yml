@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: dagster
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dagster"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - dagster-postgres:/var/lib/postgresql/data
+
+  user-code:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - dagster
+      - api
+      - grpc
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+      - --module-name
+      - ubio_autobox.definitions
+    environment: &ubio-environment
+      UBIO_DATABASE_URL: duckdb:///${UBIO_DATA_ROOT:?set UBIO_DATA_ROOT}/state/ubio.duckdb
+      UBIO_INCOMING_ROOT: ${UBIO_DATA_ROOT}/incoming
+      UBIO_ARTIFACT_ROOT: ${UBIO_DATA_ROOT}/artifacts
+      UBIO_CACHE_ROOT: ${UBIO_DATA_ROOT}/cache
+      UBIO_BACTOPIA_PROFILE: docker
+    volumes:
+      - ${UBIO_DATA_ROOT}:${UBIO_DATA_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "4000"
+
+  webserver:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - dagster-webserver
+      - --host
+      - 0.0.0.0
+      - --port
+      - "3000"
+      - --workspace
+      - /opt/dagster/dagster_home/workspace.yaml
+    environment: &dagster-environment
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-code:
+        condition: service_started
+
+  daemon:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - dagster-daemon
+      - run
+      - --workspace
+      - /opt/dagster/dagster_home/workspace.yaml
+    environment:
+      <<: *dagster-environment
+      UBIO_DATABASE_URL: duckdb:///${UBIO_DATA_ROOT:?set UBIO_DATA_ROOT}/state/ubio.duckdb
+      UBIO_INCOMING_ROOT: ${UBIO_DATA_ROOT}/incoming
+      UBIO_ARTIFACT_ROOT: ${UBIO_DATA_ROOT}/artifacts
+      UBIO_CACHE_ROOT: ${UBIO_DATA_ROOT}/cache
+      UBIO_BACTOPIA_PROFILE: docker
+    volumes:
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+      - ${UBIO_DATA_ROOT}:${UBIO_DATA_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-code:
+        condition: service_started
+
+volumes:
+  dagster-postgres:

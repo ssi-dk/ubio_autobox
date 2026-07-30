@@ -1,0 +1,29 @@
+paths:
+  incoming_root: /srv/ubio-autobox/incoming
+  artifact_root: /srv/ubio-autobox/artifacts
+  cache_root: /srv/ubio-autobox/cache
+database:
+  url: duckdb:////srv/ubio-autobox/state/ubio.duckdb
+sensor:
+  interval_seconds: 30
+  stability_observations: 2
+bactopia:
+  version: 4.0.0
+  executable: bactopia
+  profile: docker
+  runner: subprocess
+  max_cpus: 4
+  max_memory: 16.GB
+  # Optional provenance for a site wrapper image. Bactopia task containers are
+  # selected by the pinned workflow and captured from Nextflow traces.
+  image: null
+  container_digest: null
+  nextflow_version: 26.04.6
+  database_versions: {}
+  # Set these when using site-managed databases, for example:
+  # checkm2_args: [--checkm2_db=/srv/ubio-autobox/cache/checkm2]
+  # sylph_args: [--sylph_db=/srv/ubio-autobox/cache/sylph/gtdb.syldb]
+execution:
+  deployment: local
+  container_runtime: docker
+atb_schema_version: 2025-05

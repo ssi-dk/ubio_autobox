@@ -1,0 +1,5 @@
+load_from:
+  - grpc_server:
+      host: user-code
+      port: 4000
+      location_name: ubio_autobox

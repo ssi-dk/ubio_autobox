@@ -1,0 +1,52 @@
+{
+  "version": "2025-05",
+  "source": "https://allthebacteria.org/docs/metadata_sqlite/",
+  "tables": {
+    "run": [
+      ["run_accession", "string"], ["sample_accession", "string"],
+      ["in_661k", "int64"], ["in_ena_20240625", "int64"],
+      ["in_ena_20240801", "int64"], ["in_ena_20250506", "int64"],
+      ["ena_202505_batch", "string"], ["fastq_md5", "string"],
+      ["meta_pass_atb", "int64"], ["meta_pass_661k", "int64"],
+      ["pass", "int64"], ["comments", "string"]
+    ],
+    "assembly": [
+      ["sample_accession", "string"], ["run_accession", "string"],
+      ["assembly_accession", "string"], ["assembly_seqkit_sum", "string"],
+      ["asm_pipe_filter", "string"], ["asm_fasta_on_osf", "int64"],
+      ["dataset", "string"], ["scientific_name", "string"],
+      ["sylph_species_pre_202505", "string"], ["in_hq_pre_202505", "string"],
+      ["sylph_species", "string"], ["sylph_filter", "string"],
+      ["hq_filter", "string"], ["osf_tarball_filename", "string"],
+      ["osf_tarball_url", "string"], ["aws_url", "string"],
+      ["comments", "string"]
+    ],
+    "assembly_stats": [
+      ["sample_accession", "string"], ["total_length", "int64"],
+      ["number", "int64"], ["mean_length", "float64"],
+      ["longest", "int64"], ["shortest", "int64"],
+      ["N_count", "int64"], ["Gaps", "int64"], ["N50", "int64"],
+      ["N50n", "int64"], ["N70", "int64"], ["N70n", "int64"],
+      ["N90", "int64"], ["N90n", "int64"]
+    ],
+    "sylph": [
+      ["sample_accession", "string"], ["run_accession", "string"],
+      ["Genome_file", "string"], ["Taxonomic_abundance", "float64"],
+      ["Sequence_abundance", "float64"], ["Adjusted_ANI", "float64"],
+      ["Eff_cov", "float64"], ["ANI_5_95_percentile", "string"],
+      ["Eff_lambda", "float64"], ["Lambda_5_95_percentile", "string"],
+      ["Median_cov", "float64"], ["Mean_cov_geq1", "float64"],
+      ["Containment_ind", "string"], ["Naive_ANI", "float64"],
+      ["Contig_name", "string"], ["Species", "string"]
+    ],
+    "checkm2": [
+      ["sample_accession", "string"], ["Completeness_General", "float64"],
+      ["Contamination", "float64"], ["Completeness_Specific", "float64"],
+      ["Completeness_Model_Used", "string"],
+      ["Translation_Table_Used", "int64"], ["Coding_Density", "float64"],
+      ["Contig_N50", "int64"], ["Average_Gene_Length", "float64"],
+      ["Genome_Size", "int64"], ["GC_Content", "float64"],
+      ["Total_Coding_Sequences", "int64"], ["Additional_Notes", "string"]
+    ]
+  }
+}
