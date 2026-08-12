@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -17,6 +18,23 @@ class AnalysisStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     INVALID = "invalid"
+
+
+class ExecutionPhase(StrEnum):
+    """Observable checkpoints inside one Bactopia analysis attempt."""
+
+    QUEUED = "queued"
+    VALIDATING_INPUT = "validating_input"
+    PREPARING = "preparing"
+    BACTOPIA_CORE = "bactopia_core"
+    CHECKM2 = "checkm2"
+    SYLPH = "sylph"
+    PARSING_OUTPUTS = "parsing_outputs"
+    EXPORTING_RESULTS = "exporting_results"
+    PUBLISHING_ARTIFACTS = "publishing_artifacts"
+    PERSISTING_RESULTS = "persisting_results"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class FileRole(StrEnum):
@@ -71,6 +89,7 @@ class RegisteredSample:
     insdc_sample_accession: str | None = None
     source_namespace: str | None = None
     source_record_id: str | None = None
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +114,7 @@ class BactopiaRequest:
     extra_args: tuple[str, ...] = ()
     checkm2_args: tuple[str, ...] = ()
     sylph_args: tuple[str, ...] = ()
+    phase_callback: Callable[[str, str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,3 +149,4 @@ class NormalizedResultSet:
     checkm2: dict[str, Any]
     software: tuple[dict[str, Any], ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
+    attempt: int = 0

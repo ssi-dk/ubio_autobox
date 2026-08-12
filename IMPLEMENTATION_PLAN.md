@@ -409,3 +409,17 @@ The rebuild is complete when:
 - Initial Slurm storage: shared filesystem
 - Default Slurm runtime: Apptainer
 - ATB import and comparison reports: future work
+
+## 12. Local deployment observability — implemented
+
+- Every analysis attempt receives the Dagster run ID supplied by Dagster, or a
+  `manual-...` correlation ID for direct CLI execution.
+- The database, Dagster Pipes log, and `attempt-manifest.json` expose the
+  current execution phase from input validation through Bactopia core,
+  CheckM2, Sylph, parsing, export, publication, and terminal completion.
+- The database also retains per-attempt phase start/completion timestamps and
+  derived durations through the `phase_history` status field.
+- Status responses link the active or failed workspace and logs, while retry
+  history preserves the previous attempt's run ID, error, and workspace.
+- Integration coverage verifies retry registration, run correlation, phase
+  transitions, retained workspaces, and the structured attempt manifest.

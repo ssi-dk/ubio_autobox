@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
@@ -16,12 +17,16 @@ from ubio_autobox.domain.interfaces import (
 )
 from ubio_autobox.domain.models import (
     BactopiaRequest,
+    ExecutionPhase,
     NormalizedResultSet,
     RegisteredSample,
 )
 from ubio_autobox.projection import AtbProjector, BactopiaResultParser
 
+from .artifacts import AttemptManifest, inventory_files
 from .runner import BactopiaCommandBuilder, write_bactopia_samplesheet
+
+ProgressCallback = Callable[[str, str], None]
 
 
 class SampleProcessor:
@@ -48,6 +53,7 @@ class SampleProcessor:
         sample_id: UUID,
         dagster_run_id: str | None = None,
         pipeline_config_fingerprint: str | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> NormalizedResultSet:
         registered = self._repository.get_registered_sample(sample_id)
         try:
@@ -64,29 +70,113 @@ class SampleProcessor:
         workspace = self._artifacts.allocate_attempt(
             sample_id, analysis.analysis_id, analysis.attempt
         )
+        workspace_uri = workspace.resolve().as_uri()
+        manifest = AttemptManifest(
+            workspace,
+            {
+                "schema_version": "ubio-autobox-attempt-1",
+                "analysis_id": str(analysis.analysis_id),
+                "sample_id": str(analysis.sample.sample_id),
+                "batch_key": analysis.sample.batch_key,
+                "sample_key": analysis.sample.sample_key,
+                "attempt": analysis.attempt,
+                "dagster_run_id": analysis.dagster_run_id,
+                "input_fingerprint": analysis.sample.input_fingerprint,
+                "pipeline_config_fingerprint": analysis.pipeline_config_fingerprint,
+                "input_files": [
+                    {
+                        "role": role,
+                        "uri": path.resolve().as_uri(),
+                        "sha256": sha256,
+                        "size_bytes": size_bytes,
+                    }
+                    for role, path, sha256, size_bytes in (
+                        (
+                            "r1",
+                            analysis.sample.r1,
+                            analysis.sample.r1_sha256,
+                            analysis.sample.r1_size_bytes,
+                        ),
+                        (
+                            "r2",
+                            analysis.sample.r2,
+                            analysis.sample.r2_sha256,
+                            analysis.sample.r2_size_bytes,
+                        ),
+                    )
+                ],
+                "source_metadata": dict(analysis.sample.source_metadata),
+                "status": "queued",
+                "phase": ExecutionPhase.QUEUED.value,
+            },
+        )
         samplesheet = workspace / "samples.tsv"
         output_dir = workspace / "bactopia"
         logs_dir = workspace / "logs"
-        write_bactopia_samplesheet(analysis.sample, samplesheet)
-        request = BactopiaRequest(
-            analysis=analysis,
-            samplesheet_path=samplesheet,
-            output_dir=output_dir,
-            logs_dir=logs_dir,
-            executable=self._settings.bactopia.executable,
-            profile=self._settings.bactopia.profile,
-            max_cpus=self._settings.bactopia.max_cpus,
-            max_memory=self._settings.bactopia.max_memory,
-            extra_args=tuple(self._settings.bactopia.extra_args),
-            checkm2_args=tuple(self._settings.bactopia.checkm2_args),
-            sylph_args=tuple(self._settings.bactopia.sylph_args),
-        )
-        commands = BactopiaCommandBuilder.build(request)
-        self._repository.mark_running(analysis.analysis_id, _redact_commands(commands))
-
         try:
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.VALIDATING_INPUT,
+                workspace_uri,
+                progress_callback,
+                "Rechecking registered FASTQ checksums before execution.",
+            )
+            _verify_registered_inputs(analysis.sample)
+            write_bactopia_samplesheet(analysis.sample, samplesheet)
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.PREPARING,
+                workspace_uri,
+                progress_callback,
+                "Prepared the one-sample Bactopia samplesheet.",
+            )
+            request = BactopiaRequest(
+                analysis=analysis,
+                samplesheet_path=samplesheet,
+                output_dir=output_dir,
+                logs_dir=logs_dir,
+                executable=self._settings.bactopia.executable,
+                profile=self._settings.bactopia.profile,
+                max_cpus=self._settings.bactopia.max_cpus,
+                max_memory=self._settings.bactopia.max_memory,
+                extra_args=tuple(self._settings.bactopia.extra_args),
+                checkm2_args=tuple(self._settings.bactopia.checkm2_args),
+                sylph_args=tuple(self._settings.bactopia.sylph_args),
+                phase_callback=lambda phase, message: self._set_phase(
+                    analysis.analysis_id,
+                    manifest,
+                    phase,
+                    workspace_uri,
+                    progress_callback,
+                    message,
+                ),
+            )
+            commands = BactopiaCommandBuilder.build(request)
+            redacted_commands = _redact_commands(commands)
+            manifest.update(commands=redacted_commands)
+            self._repository.mark_running(
+                analysis.analysis_id, redacted_commands, workspace_uri
+            )
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.BACTOPIA_CORE,
+                workspace_uri,
+                progress_callback,
+                "Running Bactopia core.",
+            )
             execution = self._runner.run(request)
             _verify_registered_inputs(analysis.sample)
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.PARSING_OUTPUTS,
+                workspace_uri,
+                progress_callback,
+                "Parsing the required Bactopia, CheckM2, and Sylph outputs.",
+            )
             results = self._parser.parse(
                 analysis,
                 execution.output_dir,
@@ -96,11 +186,35 @@ class SampleProcessor:
                 container_digest=self._settings.bactopia.container_digest,
                 database_versions=self._settings.bactopia.database_versions,
             )
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.EXPORTING_RESULTS,
+                workspace_uri,
+                progress_callback,
+                "Writing structured ATB exports and their manifest.",
+            )
             self._projector.export_results(
                 results,
                 analysis.sample,
                 workspace / "exports",
                 mode="extended",
+                include_sample_view_tsv=True,
+            )
+            self._set_phase(
+                analysis.analysis_id,
+                manifest,
+                ExecutionPhase.PUBLISHING_ARTIFACTS,
+                workspace_uri,
+                progress_callback,
+                "Checksumming and atomically publishing the attempt artifacts.",
+            )
+            manifest.update(
+                status="succeeded",
+                phase=ExecutionPhase.SUCCEEDED.value,
+                completed_at=execution.completed_at_iso,
+                return_codes=list(execution.return_codes),
+                artifacts=inventory_files(workspace, exclude={manifest.path}),
             )
             artifact_refs = self._artifacts.publish_tree(
                 analysis.analysis_id, workspace
@@ -123,19 +237,48 @@ class SampleProcessor:
                 assembly=assembly,
                 artifacts=artifact_refs,
             )
-            self._repository.complete_analysis(completed)
+            self._repository.complete_analysis(
+                completed,
+                self._artifacts.published_attempt_uri(
+                    analysis.analysis_id, analysis.attempt
+                ),
+            )
             return completed
         except Exception as error:
             if isinstance(error, ImmutableInputError):
                 self._repository.invalidate_sample(sample_id)
             retained: Path | None = None
-            if workspace.exists():
-                retained = self._artifacts.retain_failure(workspace)
             summary = str(error)
+            if workspace.exists():
+                manifest.update(
+                    status="failed",
+                    phase=ExecutionPhase.FAILED.value,
+                    error_summary=summary[-8000:],
+                )
+                retained = self._artifacts.retain_failure(workspace)
             if retained is not None:
                 summary = f"{summary}\nFailed workspace retained at {retained}"
-            self._repository.fail_analysis(analysis.analysis_id, summary)
+            self._repository.fail_analysis(
+                analysis.analysis_id,
+                summary,
+                retained.resolve().as_uri() if retained is not None else None,
+            )
             raise
+
+    def _set_phase(
+        self,
+        analysis_id: UUID,
+        manifest: AttemptManifest,
+        phase: ExecutionPhase | str,
+        workspace_uri: str,
+        progress_callback: ProgressCallback | None,
+        message: str,
+    ) -> None:
+        phase_value = phase.value if isinstance(phase, ExecutionPhase) else phase
+        self._repository.update_analysis_phase(analysis_id, phase_value, workspace_uri)
+        manifest.update(status="running", phase=phase_value, message=message)
+        if progress_callback is not None:
+            progress_callback(phase_value, message)
 
 
 def _verify_registered_inputs(sample: RegisteredSample) -> None:

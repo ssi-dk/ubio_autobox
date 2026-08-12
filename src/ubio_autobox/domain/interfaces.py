@@ -10,6 +10,7 @@ from .models import (
     AnalysisRequest,
     ArtifactRef,
     BactopiaRequest,
+    ExecutionPhase,
     ExecutionResult,
     NormalizedResultSet,
     RegisteredSample,
@@ -32,12 +33,29 @@ class ResultRepository(Protocol):
     ) -> AnalysisRequest: ...
 
     def mark_running(
-        self, analysis_id: UUID, command_arguments: list[list[str]]
+        self,
+        analysis_id: UUID,
+        command_arguments: list[list[str]],
+        workspace_uri: str | None = None,
     ) -> None: ...
 
-    def complete_analysis(self, results: NormalizedResultSet) -> None: ...
+    def update_analysis_phase(
+        self,
+        analysis_id: UUID,
+        phase: ExecutionPhase | str,
+        workspace_uri: str | None = None,
+    ) -> None: ...
 
-    def fail_analysis(self, analysis_id: UUID, error: str) -> None: ...
+    def complete_analysis(
+        self, results: NormalizedResultSet, workspace_uri: str | None = None
+    ) -> None: ...
+
+    def fail_analysis(
+        self,
+        analysis_id: UUID,
+        error: str,
+        workspace_uri: str | None = None,
+    ) -> None: ...
 
     def get_registered_sample(self, sample_id: UUID) -> RegisteredSample: ...
 
@@ -64,5 +82,7 @@ class ArtifactStore(Protocol):
     def publish_tree(
         self, analysis_id: UUID, root: Path
     ) -> tuple[ArtifactRef, ...]: ...
+
+    def published_attempt_uri(self, analysis_id: UUID, attempt: int) -> str: ...
 
     def retain_failure(self, root: Path) -> Path: ...

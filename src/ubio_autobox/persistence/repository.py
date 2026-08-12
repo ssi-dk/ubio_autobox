@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import Engine, create_engine, inspect, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from ubio_autobox.domain.errors import (
     AnalysisAlreadyCompletedError,
@@ -18,6 +21,7 @@ from ubio_autobox.domain.errors import (
 from ubio_autobox.domain.models import (
     AnalysisRequest,
     AnalysisStatus,
+    ExecutionPhase,
     FileRole,
     NormalizedResultSet,
     RegisteredSample,
@@ -26,6 +30,7 @@ from ubio_autobox.domain.models import (
 
 from .migration import migrate_database
 from .models import (
+    AnalysisPhaseEventModel,
     AnalysisRunModel,
     ArtifactModel,
     AssemblyResultModel,
@@ -50,7 +55,11 @@ class SqlAlchemyResultRepository:
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
-        self.engine: Engine = create_engine(database_url)
+        drivername = make_url(database_url).drivername
+        engine_options = (
+            {"poolclass": NullPool} if drivername.startswith("duckdb") else {}
+        )
+        self.engine: Engine = create_engine(database_url, **engine_options)
         self._sessions = sessionmaker(
             bind=self.engine, expire_on_commit=False, class_=Session
         )
@@ -182,6 +191,8 @@ class SqlAlchemyResultRepository:
                 )
             )
             if analysis is None:
+                effective_run_id = dagster_run_id or f"manual-{uuid4()}"
+                queued_at = utc_now()
                 analysis = AnalysisRunModel(
                     analysis_id=str(uuid4()),
                     sample_id=sample.sample_id,
@@ -189,16 +200,43 @@ class SqlAlchemyResultRepository:
                     status=AnalysisStatus.QUEUED.value,
                     input_fingerprint=sample.input_fingerprint,
                     pipeline_config_fingerprint=pipeline_config_fingerprint,
-                    dagster_run_id=dagster_run_id,
+                    dagster_run_id=effective_run_id,
+                    execution_phase=ExecutionPhase.QUEUED.value,
+                    phase_updated_at=queued_at,
+                    attempt_history=[],
                 )
                 session.add(analysis)
+                # PostgreSQL enforces the phase-event foreign key while flushing.
+                # Flush the parent first because the event is intentionally kept
+                # as a separate model rather than a relationship collection.
+                session.flush()
+                session.add(
+                    AnalysisPhaseEventModel(
+                        phase_event_id=str(uuid4()),
+                        analysis_id=analysis.analysis_id,
+                        attempt=analysis.attempt,
+                        phase=ExecutionPhase.QUEUED.value,
+                        started_at=queued_at,
+                    )
+                )
             elif analysis.status == AnalysisStatus.FAILED.value:
+                history = list(analysis.attempt_history or [])
+                history.append(self._attempt_history_entry(analysis))
                 analysis.attempt += 1
                 analysis.status = AnalysisStatus.QUEUED.value
+                analysis.execution_phase = ExecutionPhase.QUEUED.value
+                queued_at = utc_now()
+                analysis.phase_updated_at = queued_at
                 analysis.error_summary = None
                 analysis.started_at = None
                 analysis.completed_at = None
-                analysis.dagster_run_id = dagster_run_id
+                analysis.attempt_workspace_uri = None
+                analysis.failed_workspace_uri = None
+                analysis.attempt_history = history
+                analysis.dagster_run_id = dagster_run_id or f"manual-{uuid4()}"
+                self._record_phase_event(
+                    session, analysis, ExecutionPhase.QUEUED.value, queued_at
+                )
             elif analysis.status == AnalysisStatus.SUCCEEDED.value:
                 raise AnalysisAlreadyCompletedError(
                     f"Analysis {analysis.analysis_id} already succeeded for this "
@@ -218,7 +256,10 @@ class SqlAlchemyResultRepository:
             )
 
     def mark_running(
-        self, analysis_id: UUID, command_arguments: list[list[str]]
+        self,
+        analysis_id: UUID,
+        command_arguments: list[list[str]],
+        workspace_uri: str | None = None,
     ) -> None:
         with self._sessions.begin() as session:
             analysis = self._require_analysis(session, analysis_id)
@@ -226,8 +267,30 @@ class SqlAlchemyResultRepository:
             analysis.command_arguments = command_arguments
             analysis.started_at = utc_now()
             analysis.completed_at = None
+            analysis.attempt_workspace_uri = workspace_uri
+            analysis.phase_updated_at = utc_now()
 
-    def complete_analysis(self, results: NormalizedResultSet) -> None:
+    def update_analysis_phase(
+        self,
+        analysis_id: UUID,
+        phase: ExecutionPhase | str,
+        workspace_uri: str | None = None,
+    ) -> None:
+        with self._sessions.begin() as session:
+            analysis = self._require_analysis(session, analysis_id)
+            phase_value = (
+                phase.value if isinstance(phase, ExecutionPhase) else str(phase)
+            )
+            updated_at = utc_now()
+            analysis.execution_phase = phase_value
+            analysis.phase_updated_at = updated_at
+            if workspace_uri is not None:
+                analysis.attempt_workspace_uri = workspace_uri
+            self._record_phase_event(session, analysis, phase_value, updated_at)
+
+    def complete_analysis(
+        self, results: NormalizedResultSet, workspace_uri: str | None = None
+    ) -> None:
         with self._sessions.begin() as session:
             analysis = self._require_analysis(session, results.analysis_id)
 
@@ -302,15 +365,45 @@ class SqlAlchemyResultRepository:
                 )
 
             analysis.status = AnalysisStatus.SUCCEEDED.value
-            analysis.completed_at = utc_now()
+            analysis.execution_phase = ExecutionPhase.SUCCEEDED.value
+            completed_at = utc_now()
+            analysis.phase_updated_at = completed_at
+            analysis.completed_at = completed_at
             analysis.error_summary = None
+            if workspace_uri is not None:
+                analysis.attempt_workspace_uri = workspace_uri
+            self._record_phase_event(
+                session,
+                analysis,
+                ExecutionPhase.SUCCEEDED.value,
+                completed_at,
+                terminal=True,
+            )
 
-    def fail_analysis(self, analysis_id: UUID, error: str) -> None:
+    def fail_analysis(
+        self,
+        analysis_id: UUID,
+        error: str,
+        workspace_uri: str | None = None,
+    ) -> None:
         with self._sessions.begin() as session:
             analysis = self._require_analysis(session, analysis_id)
             analysis.status = AnalysisStatus.FAILED.value
-            analysis.completed_at = utc_now()
+            analysis.execution_phase = ExecutionPhase.FAILED.value
+            completed_at = utc_now()
+            analysis.phase_updated_at = completed_at
+            analysis.completed_at = completed_at
             analysis.error_summary = error[-8000:]
+            if workspace_uri is not None:
+                analysis.attempt_workspace_uri = workspace_uri
+                analysis.failed_workspace_uri = workspace_uri
+            self._record_phase_event(
+                session,
+                analysis,
+                ExecutionPhase.FAILED.value,
+                completed_at,
+                terminal=True,
+            )
 
     def get_registered_sample(self, sample_id: UUID) -> RegisteredSample:
         with self._sessions() as session:
@@ -331,6 +424,7 @@ class SqlAlchemyResultRepository:
             return {
                 "analysis": self._model_dict(analysis),
                 "sample": self._model_dict(sample),
+                "phase_history": self._phase_history(session, str(analysis_id)),
                 "sequence_run": self._optional_model_dict(
                     session.get(SequenceRunResultModel, str(analysis_id))
                 ),
@@ -412,6 +506,13 @@ class SqlAlchemyResultRepository:
                 "attempt": None,
                 "dagster_run_id": None,
                 "error_summary": None,
+                "execution_phase": None,
+                "phase_updated_at": None,
+                "attempt_workspace_uri": None,
+                "failed_workspace_uri": None,
+                "logs_uri": None,
+                "attempt_history": [],
+                "phase_history": [],
                 "started_at": None,
                 "completed_at": None,
             }
@@ -426,6 +527,15 @@ class SqlAlchemyResultRepository:
                         "attempt": analysis.attempt,
                         "dagster_run_id": analysis.dagster_run_id,
                         "error_summary": analysis.error_summary,
+                        "execution_phase": analysis.execution_phase,
+                        "phase_updated_at": analysis.phase_updated_at,
+                        "attempt_workspace_uri": analysis.attempt_workspace_uri,
+                        "failed_workspace_uri": analysis.failed_workspace_uri,
+                        "logs_uri": _logs_uri(analysis.attempt_workspace_uri),
+                        "attempt_history": list(analysis.attempt_history or []),
+                        "phase_history": self._phase_history(
+                            session, analysis.analysis_id
+                        ),
                         "started_at": analysis.started_at,
                         "completed_at": analysis.completed_at,
                     }
@@ -480,7 +590,87 @@ class SqlAlchemyResultRepository:
             insdc_sample_accession=sample.insdc_sample_accession,
             source_namespace=sample.source_namespace,
             source_record_id=sample.source_record_id,
+            source_metadata=dict(sample.source_metadata or {}),
         )
+
+    @staticmethod
+    def _attempt_history_entry(analysis: AnalysisRunModel) -> dict[str, object]:
+        return {
+            "attempt": analysis.attempt,
+            "status": analysis.status,
+            "execution_phase": analysis.execution_phase,
+            "dagster_run_id": analysis.dagster_run_id,
+            "attempt_workspace_uri": analysis.attempt_workspace_uri,
+            "failed_workspace_uri": analysis.failed_workspace_uri,
+            "error_summary": analysis.error_summary,
+            "started_at": _iso_datetime(analysis.started_at),
+            "completed_at": _iso_datetime(analysis.completed_at),
+        }
+
+    @staticmethod
+    def _record_phase_event(
+        session: Session,
+        analysis: AnalysisRunModel,
+        phase: str,
+        started_at: datetime,
+        *,
+        terminal: bool = False,
+    ) -> None:
+        active = session.scalar(
+            select(AnalysisPhaseEventModel)
+            .where(
+                AnalysisPhaseEventModel.analysis_id == analysis.analysis_id,
+                AnalysisPhaseEventModel.attempt == analysis.attempt,
+                AnalysisPhaseEventModel.completed_at.is_(None),
+            )
+            .order_by(AnalysisPhaseEventModel.started_at.desc())
+        )
+        if active is not None and active.phase == phase:
+            if terminal:
+                active.completed_at = started_at
+            return
+        if active is not None:
+            active.completed_at = started_at
+        session.add(
+            AnalysisPhaseEventModel(
+                phase_event_id=str(uuid4()),
+                analysis_id=analysis.analysis_id,
+                attempt=analysis.attempt,
+                phase=phase,
+                started_at=started_at,
+                completed_at=started_at if terminal else None,
+            )
+        )
+
+    @classmethod
+    def _phase_history(
+        cls, session: Session, analysis_id: str
+    ) -> list[dict[str, object]]:
+        rows = session.scalars(
+            select(AnalysisPhaseEventModel)
+            .where(AnalysisPhaseEventModel.analysis_id == analysis_id)
+            .order_by(
+                AnalysisPhaseEventModel.started_at,
+                AnalysisPhaseEventModel.phase_event_id,
+            )
+        )
+        now = utc_now()
+        return [cls._phase_event_dict(row, now) for row in rows]
+
+    @staticmethod
+    def _phase_event_dict(
+        event: AnalysisPhaseEventModel, now: datetime
+    ) -> dict[str, object]:
+        completed_at = event.completed_at
+        end = completed_at or now
+        return {
+            "phase_event_id": event.phase_event_id,
+            "attempt": event.attempt,
+            "phase": event.phase,
+            "started_at": event.started_at,
+            "completed_at": completed_at,
+            "duration_seconds": _duration_seconds(event.started_at, end),
+        }
 
     @staticmethod
     def _require_analysis(session: Session, analysis_id: UUID) -> AnalysisRunModel:
@@ -535,3 +725,24 @@ def _sylph_abundance_key(row: dict[str, object]) -> tuple[bool, float]:
     if isinstance(value, (int, float)):
         return True, float(value)
     return False, 0.0
+
+
+def _iso_datetime(value: object) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _duration_seconds(start: datetime, end: datetime) -> float:
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=end.tzinfo or UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=start.tzinfo or UTC)
+    return max(0.0, (end - start).total_seconds())
+
+
+def _logs_uri(workspace_uri: str | None) -> str | None:
+    if not workspace_uri:
+        return None
+    parsed = urlparse(workspace_uri)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path), "logs").as_uri()

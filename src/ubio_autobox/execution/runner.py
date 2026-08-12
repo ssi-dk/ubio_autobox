@@ -41,7 +41,7 @@ def write_bactopia_samplesheet(sample: RegisteredSample, path: Path) -> None:
                 sample.sample_key,
                 "paired-end",
                 "",
-                "",
+                str(sample.source_metadata.get("species") or ""),
                 str(sample.r1),
                 str(sample.r2),
                 "",
@@ -108,6 +108,11 @@ class SubprocessBactopiaRunner:
         return_codes: list[int] = []
 
         for index, command in enumerate(commands, start=1):
+            if request.phase_callback is not None:
+                request.phase_callback(
+                    _phase_for_command(index),
+                    f"Running Bactopia command {index} of {len(commands)}.",
+                )
             stdout_path = request.logs_dir / f"{index:02d}.stdout.log"
             stderr_path = request.logs_dir / f"{index:02d}.stderr.log"
             try:
@@ -230,6 +235,11 @@ class FakeBactopiaRunner:
             ],
         )
         for index, command in enumerate(commands, start=1):
+            if request.phase_callback is not None:
+                request.phase_callback(
+                    _phase_for_command(index),
+                    f"Running deterministic test command {index} of {len(commands)}.",
+                )
             (request.logs_dir / f"{index:02d}.stdout.log").write_text(
                 f"fake execution: {command!r}\n", encoding="utf-8"
             )
@@ -288,3 +298,11 @@ def _validate_extra_args(arguments: tuple[str, ...]) -> None:
             raise ValueError(
                 f"{flag} is controlled by ubio_autobox and cannot be overridden"
             )
+
+
+def _phase_for_command(index: int) -> str:
+    return {
+        1: "bactopia_core",
+        2: "checkm2",
+        3: "sylph",
+    }[index]

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from ubio_autobox.domain.errors import ImmutableInputError
@@ -61,6 +64,16 @@ class LocalArtifactStore:
         root.rename(retained)
         return retained
 
+    def published_attempt_uri(self, analysis_id: UUID, attempt: int) -> str:
+        """Return the stable URI for a successfully published attempt."""
+
+        matches = list(self._root.glob(f"samples/*/analyses/{analysis_id}"))
+        if len(matches) != 1:
+            raise ImmutableInputError(
+                f"Could not resolve published analysis root for {analysis_id}"
+            )
+        return (matches[0] / "published" / f"attempt-{attempt:04d}").resolve().as_uri()
+
     @staticmethod
     def _artifact_for(
         analysis_id: UUID, path: Path, published_root: Path
@@ -93,3 +106,49 @@ class LocalArtifactStore:
         if name.endswith((".tsv", ".csv", ".json")):
             return "result"
         return "bactopia_output"
+
+
+class AttemptManifest:
+    """Write the structured, human- and machine-readable attempt record."""
+
+    def __init__(self, root: Path, initial: dict[str, Any]) -> None:
+        self._path = root / "attempt-manifest.json"
+        self._data = dict(initial)
+        self.update()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def update(self, **values: Any) -> None:
+        self._data.update(values)
+        self._data["updated_at"] = datetime.now(UTC).isoformat()
+        self._path.write_text(
+            json.dumps(self._data, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+
+
+def inventory_files(
+    root: Path, *, exclude: set[Path] | None = None
+) -> list[dict[str, Any]]:
+    """Return checksummed relative file metadata for an attempt manifest."""
+
+    excluded = {path.resolve() for path in (exclude or set())}
+    return [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": _sha256_file(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.resolve() not in excluded
+    ]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

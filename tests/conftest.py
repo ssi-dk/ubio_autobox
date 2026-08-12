@@ -44,6 +44,7 @@ def make_batch(
     sample_accession: str = "",
     source_namespace: str = "",
     source_record_id: str = "",
+    species: str = "",
 ) -> Path:
     batch = incoming / batch_key
     sample_dir = batch / "samples" / sample_key
@@ -62,6 +63,7 @@ def make_batch(
                 "insdc_sample_accession",
                 "source_namespace",
                 "source_record_id",
+                "species",
                 "lab_note",
             ],
         )
@@ -74,6 +76,7 @@ def make_batch(
                 "insdc_sample_accession": sample_accession,
                 "source_namespace": source_namespace,
                 "source_record_id": source_record_id,
+                "species": species,
                 "lab_note": "synthetic",
             }
         )

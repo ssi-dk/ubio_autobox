@@ -83,6 +83,7 @@ def test_analysis_status_json_and_exit_codes(tmp_path: Path) -> None:
     assert absent_result.exit_code == ANALYSIS_RETRYABLE_EXIT
     assert absent["status"] == "absent"
     assert absent["analysis_id"] is None
+    assert absent["phase_history"] == []
 
     make_batch(settings.paths.incoming_root)
     sample = (
@@ -107,6 +108,7 @@ def test_analysis_status_json_and_exit_codes(tmp_path: Path) -> None:
     assert queued_result.exit_code == ANALYSIS_RETRYABLE_EXIT
     assert queued["status"] == "queued"
     assert queued["analysis_id"] == str(analysis.analysis_id)
+    assert queued["phase_history"][-1]["phase"] == "queued"
 
     repository.mark_running(analysis.analysis_id, [["bactopia", "--redacted"]])
     running_result, running = _analysis_status(runner, sample.sample_id, config)
@@ -124,3 +126,48 @@ def test_analysis_status_json_and_exit_codes(tmp_path: Path) -> None:
     assert succeeded_result.exit_code == ANALYSIS_COMPLETE_EXIT
     assert succeeded["status"] == "succeeded"
     assert succeeded["analysis_id"] == str(completed.analysis_id)
+    assert succeeded["phase_history"][-1]["phase"] == "succeeded"
+    assert all(
+        event["completed_at"] is not None for event in succeeded["phase_history"]
+    )
+
+
+def test_synthetic_run_generates_and_processes_fast_path(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        [
+            "synthetic-run",
+            "--config",
+            str(config),
+            "--samples",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["sample_count"] == 2
+    assert payload["processed"] is True
+    assert len(payload["analyses"]) == 2
+    assert {item["status"]["status"] for item in payload["analyses"]} == {"succeeded"}
+
+
+def test_synthetic_no_process_leaves_batch_for_sensor(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        [
+            "synthetic-run",
+            "--config",
+            str(config),
+            "--no-process",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["registered"] is False
+    assert payload["processed"] is False
+    assert Path(payload["batch"], "samples.csv").is_file()
+    assert build_repository(load_settings(config)).list_samples() == []

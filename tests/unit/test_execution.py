@@ -14,6 +14,7 @@ from ubio_autobox.execution import (
     BactopiaCommandBuilder,
     write_bactopia_samplesheet,
 )
+from ubio_autobox.execution.payload import _sample_tsv_metadata
 from ubio_autobox.execution.processor import _redact_commands
 
 
@@ -59,6 +60,7 @@ def test_bactopia_4_samplesheet_contract(tmp_path: Path) -> None:
         input_fingerprint="a" * 64,
         r1=tmp_path / "r1.fastq.gz",
         r2=tmp_path / "r2.fastq.gz",
+        source_metadata={"species": "Staphylococcus aureus"},
     )
     samplesheet = tmp_path / "samples.tsv"
     write_bactopia_samplesheet(sample, samplesheet)
@@ -75,6 +77,7 @@ def test_bactopia_4_samplesheet_contract(tmp_path: Path) -> None:
         "assembly",
     ]
     assert len(lines[1].split("\t")) == 9
+    assert lines[1].split("\t")[3] == "Staphylococcus aureus"
 
 
 def test_controlled_bactopia_arguments_cannot_be_overridden(tmp_path: Path) -> None:
@@ -112,3 +115,27 @@ def test_persisted_command_arguments_redact_secret_values() -> None:
     assert _redact_commands(commands) == [
         ["tool", "--api-token", "<redacted>", "--flag=value"]
     ]
+
+
+def test_sample_tsv_metadata_uses_dagster_table_and_markdown_types(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sample_view.tsv"
+    path.write_text(
+        "ubio_sample_id\trun__pass\tassembly__scientific_name\n"
+        "sample-1\t1\tEscherichia coli\n",
+        encoding="utf-8",
+    )
+
+    table, markdown = _sample_tsv_metadata(path)
+
+    assert table["type"] == "table"
+    assert table["raw_value"]["records"] == [
+        {
+            "ubio_sample_id": "sample-1",
+            "run__pass": "1",
+            "assembly__scientific_name": "Escherichia coli",
+        }
+    ]
+    assert markdown["type"] == "md"
+    assert "| Scientific name | Escherichia coli |" in markdown["raw_value"]

@@ -34,6 +34,23 @@ def test_environment_overrides_yaml(
     assert settings.atb_schema_version == "2025-05"
 
 
+def test_relative_database_url_is_resolved_for_child_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "database:\n  url: duckdb:///./state/results.duckdb\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings(config)
+
+    assert settings.database.url == (
+        f"duckdb:///{(tmp_path / 'state' / 'results.duckdb').resolve()}"
+    )
+
+
 def test_slurm_requires_absolute_shared_root() -> None:
     with pytest.raises(ValueError, match="absolute shared path"):
         AppSettings.model_validate(

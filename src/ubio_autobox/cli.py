@@ -11,7 +11,11 @@ import typer
 from ubio_autobox.config import load_settings
 from ubio_autobox.domain.models import AnalysisStatus
 from ubio_autobox.execution.factory import build_processor, build_repository
-from ubio_autobox.ingest import FilesystemInputRegistry, StabilityCursor
+from ubio_autobox.ingest import (
+    FilesystemInputRegistry,
+    StabilityCursor,
+    create_synthetic_batch,
+)
 from ubio_autobox.persistence import migrate_database
 from ubio_autobox.projection import AtbProjector
 
@@ -81,12 +85,99 @@ def scan(
 
 
 @app.command()
-def process(sample_id: UUID, config: Path | None = None) -> None:
-    """Process one already-registered sample without the Dagster UI."""
+def process(
+    sample_id: UUID,
+    config: Path | None = None,
+    dagster_run_id: str | None = typer.Option(
+        None,
+        help="Existing Dagster run ID to correlate with this manual execution.",
+    ),
+) -> None:
+    """Process one registered sample and retain a run correlation ID."""
 
     settings = load_settings(config)
-    result = build_processor(settings).process(sample_id)
+    result = build_processor(settings).process(
+        sample_id,
+        dagster_run_id=dagster_run_id,
+    )
     typer.echo(str(result.analysis_id))
+
+
+@app.command("synthetic-run")
+def synthetic_run(
+    config: Path | None = None,
+    samples: int = typer.Option(1, min=1, max=1000, help="Synthetic sample count."),
+    batch_key: str | None = typer.Option(
+        None, help="Optional batch key; defaults to a unique synthetic key."
+    ),
+    sample_prefix: str = typer.Option("synthetic", help="Synthetic sample prefix."),
+    species: str = typer.Option(
+        "Escherichia coli", help="Metadata species written to the manifest."
+    ),
+    run_processing: bool = typer.Option(
+        True,
+        "--process/--no-process",
+        help="Run the fake Bactopia path after registration.",
+    ),
+) -> None:
+    """Generate disposable valid inputs and optionally process them quickly."""
+
+    settings = load_settings(config)
+    if settings.bactopia.runner != "fake":
+        settings = settings.model_copy(
+            update={"bactopia": settings.bactopia.model_copy(update={"runner": "fake"})}
+        )
+    batch = create_synthetic_batch(
+        settings.paths.incoming_root,
+        sample_count=samples,
+        batch_key=batch_key,
+        sample_prefix=sample_prefix,
+        species=species,
+    )
+    analyses: list[dict[str, object]] = []
+    registered = False
+    if run_processing:
+        repository = build_repository(settings)
+        discovery = FilesystemInputRegistry(
+            settings.paths.incoming_root,
+            repository,
+            stability_observations=1,
+        ).discover_and_register()
+        if discovery.errors or len(discovery.samples) != samples:
+            raise RuntimeError(
+                f"Synthetic registration did not complete: {list(discovery.errors)}"
+            )
+        registered = True
+        processor = build_processor(settings)
+        for sample in discovery.samples:
+            result = processor.process(sample.sample_id)
+            status = repository.get_analysis_status(
+                sample.sample_id, settings.pipeline_fingerprint()
+            )
+            analyses.append(
+                {
+                    "sample_id": str(sample.sample_id),
+                    "analysis_id": str(result.analysis_id),
+                    "status": status,
+                }
+            )
+
+    typer.echo(
+        json.dumps(
+            {
+                "batch": str(batch.path),
+                "sample_keys": list(batch.sample_keys),
+                "sample_count": samples,
+                "runner": settings.bactopia.runner,
+                "registered": registered,
+                "processed": run_processing,
+                "analyses": analyses,
+            },
+            default=str,
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 @app.command()
@@ -123,6 +214,7 @@ def analysis_status(
             "attempt": None,
             "dagster_run_id": None,
             "error_summary": None,
+            "phase_history": [],
             "started_at": None,
             "completed_at": None,
         }

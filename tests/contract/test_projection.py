@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 from tests.conftest import make_batch
 
 from ubio_autobox.execution.factory import build_processor, build_repository
@@ -50,6 +51,14 @@ def test_tracer_bullet_persists_and_exports_all_tables(
         "checkm2.parquet",
         "sample_view.parquet",
     } <= export_files
+
+    tsv_files = {path.name for path in app_settings.paths.artifact_root.rglob("*.tsv")}
+    assert "sample_view.tsv" in tsv_files
+    sample_tsv = next(app_settings.paths.artifact_root.rglob("sample_view.tsv"))
+    sample_view = pd.read_csv(sample_tsv, sep="\t")
+    assert len(sample_view) == 1
+    assert all(not column.lower().endswith("accession") for column in sample_view)
+    assert sample_view.iloc[0]["ubio_sample_id"] == str(registered.sample_id)
 
     projector = AtbProjector()
     wide = projector.dataframe(repository)

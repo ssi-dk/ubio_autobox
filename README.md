@@ -61,6 +61,10 @@ FASTQs, a `READY` marker, stable file observations, and SHA-256 checksums.
 Registration makes the manifest and inputs immutable. Changed inputs are
 invalidated and must be submitted as a new batch/sample.
 
+Additional manifest columns are retained as source metadata. When a manifest
+contains `species`, the value is passed into Bactopia's `species` samplesheet
+column.
+
 ## Local development
 
 ```bash
@@ -72,15 +76,37 @@ pixi run dagster-dev
 `init-db` remains a compatibility alias for the same idempotent packaged
 Alembic migration path.
 
-Dagster scans every 30 seconds. Each registered `sample_id` becomes a dynamic
-partition and receives an idempotent run key derived from the sample UUID,
-input fingerprint, and pipeline configuration fingerprint.
+Dagster scans every 30 seconds by default (`sensor.interval_seconds`). Each
+registered `sample_id` becomes a dynamic partition and receives an idempotent
+run key derived from the sample UUID, input fingerprint, and pipeline
+configuration fingerprint. A sample is not re-queued on every poll once it is
+running, failed, or complete; use Dagster re-execution for a visible retry.
 
 For a dependency-free scientific tracer test:
 
 ```bash
 UBIO_BACTOPIA_RUNNER=fake pixi run pytest
 ```
+
+For a fast end-to-end smoke run that generates tiny valid paired FASTQs,
+metadata, `READY` markers, registrations, artifacts, and normalized results:
+
+```bash
+pixi run ubio-autobox synthetic-run \
+  --config examples/config.synthetic.yaml \
+  --samples 3
+```
+
+Use `--no-process` when you only want to generate the landing batch for the
+periodic Dagster sensor. To run Dagster against that isolated synthetic
+configuration, use:
+
+```bash
+UBIO_CONFIG_FILE="$PWD/examples/config.synthetic.yaml" pixi run dagster-dev
+```
+
+Synthetic runs always use the fake Bactopia adapter; keep their
+`.ubio-synthetic` data root separate from real inputs.
 
 The Bactopia and Nextflow packages are locked for `linux-64`. On macOS, use
 the fake runner for host-side development and Docker Compose for real
@@ -149,6 +175,15 @@ Successful attempts are published immutably beneath:
 artifacts/samples/<sample_id>/analyses/<analysis_id>/published/attempt-0001/
 ```
 
+Each attempt also contains an `attempt-manifest.json` at its root. It records
+input metadata and checksums, the Dagster/manual run correlation ID, attempt
+number, redacted commands, phase, return codes, and checksummed files. The
+database and Dagster Pipes logs expose the same phase updates:
+`validating_input`, `preparing`, `bactopia_core`, `checkm2`, `sylph`,
+`parsing_outputs`, `exporting_results`, `publishing_artifacts`, and terminal
+`succeeded`/`failed`. Failed attempts remain linked through
+`failed_workspace_uri` and `logs_uri`; retries retain prior attempt history.
+
 Each per-sample export contains:
 
 ```text
@@ -159,13 +194,19 @@ exports/<export_id>/
 ├── assembly_stats.parquet
 ├── sylph.parquet
 ├── checkm2.parquet
-└── sample_view.parquet
+├── sample_view.parquet
+└── sample_view.tsv
 ```
 
 Extended tables retain local records and add `ubio_sample_id`,
 `ubio_analysis_id`, and `atb_schema_version`. Strict tables contain only ATB
-columns and exclude records without genuine public accessions. UUIDs are never
-substituted for accessions.
+columns and exclude records without genuine public accessions. The per-sample
+`sample_view.tsv` is a human-readable extended view with accession columns
+removed for locally generated samples. Its `file://` URI is attached as
+`atb_sample_tsv_uri` to the completed Dagster materializations. The
+`atb_sample_export` materialization also includes a typed Dagster table preview
+(`atb_sample_preview`) and a compact Markdown summary (`atb_sample_summary`)
+for overview display. UUIDs are never substituted for accessions.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/atb-field-mapping.md`](docs/atb-field-mapping.md), and

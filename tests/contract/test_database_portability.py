@@ -9,4 +9,4 @@ def test_models_compile_for_sql_server_dialect() -> None:
         lambda *args, **kwargs: None,
     )
     Base.metadata.create_all(engine)
-    assert len(Base.metadata.tables) == 12
+    assert len(Base.metadata.tables) == 13

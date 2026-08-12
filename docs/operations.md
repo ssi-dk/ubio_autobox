@@ -23,8 +23,11 @@ the same artifact tree snapshot and configuration fingerprint information.
 
 ## Recovery
 
-Failed attempt workspaces and logs are retained under `failed/`. A retry
-increments the analysis attempt number and receives a fresh staging directory.
+Failed attempt workspaces and logs are retained under `failed/` and linked from
+the status response. A retry increments the analysis attempt number, receives a
+fresh staging directory, and retains the previous run ID and failure in
+`attempt_history`. Dagster re-execution gives the new attempt a new Dagster run
+ID; direct CLI processing creates a `manual-...` correlation ID.
 Never edit a published attempt. Submit changed input as a new batch/sample.
 
 ## Secrets and sample data

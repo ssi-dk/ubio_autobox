@@ -62,7 +62,13 @@ ubio-autobox analysis-status <sample-uuid> \
 
 The JSON object has stable `sample_id`, `sample_key`, `sample_status`,
 `pipeline_config_fingerprint`, `analysis_id`, `status`, `attempt`,
-`dagster_run_id`, `error_summary`, `started_at`, and `completed_at` keys.
+`dagster_run_id`, `execution_phase`, `phase_updated_at`,
+`attempt_workspace_uri`, `failed_workspace_uri`, `logs_uri`,
+`attempt_history`, `phase_history`, `error_summary`, `started_at`, and
+`completed_at` keys. `phase_history` contains ordered phase records with
+`attempt`, `phase`, `started_at`, `completed_at`, and `duration_seconds`.
+The active phase has a null `completed_at` and a duration measured through the
+status query time.
 Exit codes are:
 
 - `0`: analysis succeeded;

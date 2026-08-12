@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy.engine import make_url
 
 
 def _default_data_root() -> Path:
@@ -43,6 +44,24 @@ class DatabaseSettings(BaseModel):
             f"duckdb:///{(_default_data_root() / 'state' / 'ubio.duckdb').as_posix()}"
         )
     )
+
+    @field_validator("url")
+    @classmethod
+    def resolve_local_database_url(cls, value: str) -> str:
+        """Make local database paths stable when work runs in child directories."""
+
+        parsed = make_url(value)
+        database = parsed.database
+        if (
+            database
+            and database not in {":memory:"}
+            and not database.startswith("file:")
+            and parsed.drivername.startswith(("duckdb", "sqlite"))
+        ):
+            database_path = Path(database).expanduser()
+            if not database_path.is_absolute():
+                parsed = parsed.set(database=str(database_path.resolve()))
+        return parsed.render_as_string(hide_password=False)
 
 
 class SensorSettings(BaseModel):

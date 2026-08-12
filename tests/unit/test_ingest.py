@@ -33,6 +33,18 @@ def test_ready_sample_is_stable_registered_and_idempotent(tmp_path: Path) -> Non
     assert len(repository.list_samples()) == 1
 
 
+def test_species_metadata_survives_registration_for_bactopia(tmp_path: Path) -> None:
+    incoming = tmp_path / "incoming"
+    make_batch(incoming, species="Staphylococcus aureus")
+    repository = _repository(tmp_path)
+    registry = FilesystemInputRegistry(incoming, repository, 1)
+
+    registered = registry.discover_and_register().samples[0]
+    reloaded = repository.get_registered_sample(registered.sample_id)
+
+    assert reloaded.source_metadata["species"] == "Staphylococcus aureus"
+
+
 def test_sample_without_ready_is_ignored(tmp_path: Path) -> None:
     incoming = tmp_path / "incoming"
     make_batch(incoming, ready=False)

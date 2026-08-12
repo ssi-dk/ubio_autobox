@@ -79,6 +79,7 @@ class AtbProjector:
         *,
         mode: ProjectionMode = "extended",
         include_tsv: bool = False,
+        include_sample_view_tsv: bool = False,
     ) -> ExportResult:
         export_id = uuid4()
         root = export_parent / str(export_id)
@@ -97,6 +98,15 @@ class AtbProjector:
         view_path = root / "sample_view.parquet"
         sample_view.to_parquet(view_path, index=False)
         files.append(view_path)
+        if include_sample_view_tsv:
+            sample_tsv_path = root / "sample_view.tsv"
+            _without_accession_columns(sample_view).to_csv(
+                sample_tsv_path,
+                sep="\t",
+                index=False,
+                na_rep="",
+            )
+            files.append(sample_tsv_path)
 
         manifest_path = root / "manifest.json"
         manifest = {
@@ -281,6 +291,15 @@ def _strict_rows(name: str, frame: pd.DataFrame) -> pd.DataFrame:
             frame["run_accession"].fillna("").astype(str).str.fullmatch(_RUN_ACCESSION)
         )
     return frame.loc[valid].reset_index(drop=True)
+
+
+def _without_accession_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        column
+        for column in frame.columns
+        if not str(column).lower().endswith("accession")
+    ]
+    return frame.loc[:, columns]
 
 
 def _rename(row: dict[str, object], names: dict[str, str]) -> dict[str, object]:

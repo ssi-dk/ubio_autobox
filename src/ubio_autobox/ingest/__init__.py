@@ -5,5 +5,12 @@ from .registry import (
     FilesystemInputRegistry,
     StabilityCursor,
 )
+from .synthetic import SyntheticBatch, create_synthetic_batch
 
-__all__ = ["DiscoveryResult", "FilesystemInputRegistry", "StabilityCursor"]
+__all__ = [
+    "DiscoveryResult",
+    "FilesystemInputRegistry",
+    "StabilityCursor",
+    "SyntheticBatch",
+    "create_synthetic_batch",
+]

@@ -149,6 +149,7 @@ class BactopiaResultParser:
             sylph=sylph,
             checkm2=checkm2,
             software=tuple(software),
+            attempt=analysis.attempt,
         )
 
     @staticmethod

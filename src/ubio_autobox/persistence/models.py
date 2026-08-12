@@ -132,6 +132,11 @@ class AnalysisRunModel(Base):
     dagster_run_id: Mapped[str | None] = mapped_column(String(255))
     command_arguments: Mapped[list[list[str]] | None] = mapped_column(JSON)
     error_summary: Mapped[str | None] = mapped_column(Text)
+    execution_phase: Mapped[str | None] = mapped_column(String(64))
+    phase_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_workspace_uri: Mapped[str | None] = mapped_column(Text)
+    failed_workspace_uri: Mapped[str | None] = mapped_column(Text)
+    attempt_history: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -139,6 +144,21 @@ class AnalysisRunModel(Base):
     )
 
     sample: Mapped[SampleModel] = relationship(back_populates="analyses")
+
+
+class AnalysisPhaseEventModel(Base):
+    __tablename__ = "analysis_phase_events"
+
+    phase_event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_runs.analysis_id"), nullable=False, index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SoftwareComponentModel(Base):

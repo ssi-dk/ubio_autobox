@@ -46,6 +46,11 @@ def sample_analysis(  # type: ignore[no-untyped-def]
 
     sample_id = UUID(context.partition_key)
     settings = _settings()
+    context.log.info(
+        "Starting sample analysis for %s in Dagster run %s.",
+        sample_id,
+        context.run_id,
+    )
     extra_env = {
         "UBIO_SAMPLE_ID": str(sample_id),
         "UBIO_DAGSTER_RUN_ID": context.run_id,
@@ -75,17 +80,30 @@ def sample_analysis(  # type: ignore[no-untyped-def]
         extra_env["UBIO_BACTOPIA_CONTAINER_DIGEST"] = settings.bactopia.container_digest
     if settings.bactopia.nextflow_version:
         extra_env["UBIO_NEXTFLOW_VERSION"] = settings.bactopia.nextflow_version
-    invocation = compute.run(
-        context=context,
-        payload_path=str(files("ubio_autobox.execution") / "payload.py"),
-        config=config,
-        extra_env=extra_env,
-        extra_slurm_opts=(
-            _slurm_run_options(settings)
-            if settings.execution.deployment == "slurm"
-            else None
-        ),
-        poll_timeout=_wall_time_seconds(settings.slurm.wall_time) + 900,
+    try:
+        invocation = compute.run(
+            context=context,
+            payload_path=str(files("ubio_autobox.execution") / "payload.py"),
+            config=config,
+            extra_env=extra_env,
+            extra_slurm_opts=(
+                _slurm_run_options(settings)
+                if settings.execution.deployment == "slurm"
+                else None
+            ),
+            poll_timeout=_wall_time_seconds(settings.slurm.wall_time) + 900,
+        )
+    except Exception:
+        context.log.exception(
+            "Sample analysis failed for %s in Dagster run %s.",
+            sample_id,
+            context.run_id,
+        )
+        raise
+    context.log.info(
+        "Completed sample analysis for %s in Dagster run %s.",
+        sample_id,
+        context.run_id,
     )
     return invocation.get_results()
 
@@ -125,9 +143,11 @@ def _evaluate_incoming_samples(
             tags={
                 "ubio/sample_id": str(sample.sample_id),
                 "ubio/input_fingerprint": sample.input_fingerprint,
+                "ubio/trigger": "incoming_sample_sensor",
             },
         )
         for sample in result.samples
+        if _is_launchable_sample(repository, sample.sample_id, settings)
     ]
     requests = [SAMPLE_PARTITIONS.build_add_request(new_keys)] if new_keys else []
     return dg.SensorResult(
@@ -150,6 +170,19 @@ def build_incoming_sample_sensor(settings: AppSettings) -> dg.SensorDefinition:
         return _evaluate_incoming_samples(context, settings)
 
     return incoming_sample_sensor
+
+
+def _is_launchable_sample(
+    repository: object, sample_id: UUID, settings: AppSettings
+) -> bool:
+    """Avoid re-queueing terminal or already active work on every poll."""
+
+    status = repository.get_analysis_status(  # type: ignore[attr-defined]
+        sample_id, settings.pipeline_fingerprint()
+    )
+    if status is None:
+        return True
+    return str(status.get("status")) == "validated"
 
 
 def build_compute_resource(settings: AppSettings) -> ComputeResource:

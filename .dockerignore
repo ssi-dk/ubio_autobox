@@ -8,6 +8,7 @@ private
 runtimes
 tests
 __pycache__
+*.egg-info
 *.duckdb
 *.dmnd
 *.fastq
