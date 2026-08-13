@@ -24,7 +24,10 @@ flowchart LR
 The five Dagster assets are logical views of one sample computation. They use a
 single multi-asset compute boundary, which is the unit submitted by
 `dagster-slurm`. Bactopia's Nextflow executor remains local inside the
-allocation. No process submits another Slurm job.
+allocation. No process submits another Slurm job. Within that allocation, the
+runner persists explicit checkpoints for Bactopia core, CheckM2, and Sylph;
+retries validate the last successful checkpoint and continue from the next
+phase.
 
 ## Deep modules
 
@@ -68,7 +71,11 @@ During analysis, every attempt receives a new staging directory. Non-zero
 commands or structurally invalid output fail the analysis and retain the
 workspace/logs. Biological quality failures produce filter values but remain
 successful analyses. Scientific artifacts are published only after all
-required outputs parse.
+required outputs parse. Phase events distinguish running, succeeded, and
+failed work and retain a checksum-backed checkpoint for each completed
+scientific phase. A retry copies and validates the retained checkpoint before
+using Bactopia/Nextflow resume; a missing or changed checkpoint forces a fresh
+attempt rather than trusting database state alone.
 
 ## Storage
 

@@ -50,6 +50,7 @@ def test_migration_environment_is_packaged() -> None:
     assert migration_root.joinpath(
         "versions", "0003_analysis_phase_events.py"
     ).is_file()
+    assert migration_root.joinpath("versions", "0004_phase_checkpoints.py").is_file()
 
 
 def test_repository_migration_preserves_exact_database_url(tmp_path: Path) -> None:

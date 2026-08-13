@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import UUID
 
 from ubio_autobox.config import AppSettings
@@ -16,6 +18,7 @@ from ubio_autobox.domain.interfaces import (
     ResultRepository,
 )
 from ubio_autobox.domain.models import (
+    AnalysisRequest,
     BactopiaRequest,
     ExecutionPhase,
     NormalizedResultSet,
@@ -108,12 +111,26 @@ class SampleProcessor:
                 "source_metadata": dict(analysis.sample.source_metadata),
                 "status": "queued",
                 "phase": ExecutionPhase.QUEUED.value,
+                "resume_from_phase": (
+                    analysis.resume_from_phase.value
+                    if analysis.resume_from_phase is not None
+                    else None
+                ),
+                "resume_workspace_uri": analysis.resume_workspace_uri,
+                "resume_checkpoint_uri": analysis.resume_checkpoint_uri,
+                "resume_checkpoint_sha256": analysis.resume_checkpoint_sha256,
             },
         )
         samplesheet = workspace / "samples.tsv"
         output_dir = workspace / "bactopia"
         logs_dir = workspace / "logs"
+        checkpoints: dict[str, dict[str, object]] = {}
         try:
+            if analysis.resume_workspace_uri is not None:
+                _verify_resume_checkpoint(analysis)
+                self._artifacts.seed_attempt_from_workspace(
+                    _path_from_file_uri(analysis.resume_workspace_uri), workspace
+                )
             self._set_phase(
                 analysis.analysis_id,
                 manifest,
@@ -141,6 +158,12 @@ class SampleProcessor:
                 profile=self._settings.bactopia.profile,
                 max_cpus=self._settings.bactopia.max_cpus,
                 max_memory=self._settings.bactopia.max_memory,
+                core_max_cpus=self._settings.bactopia.core_max_cpus,
+                core_max_memory=self._settings.bactopia.core_max_memory,
+                checkm2_max_cpus=self._settings.bactopia.checkm2_max_cpus,
+                checkm2_max_memory=self._settings.bactopia.checkm2_max_memory,
+                sylph_max_cpus=self._settings.bactopia.sylph_max_cpus,
+                sylph_max_memory=self._settings.bactopia.sylph_max_memory,
                 extra_args=tuple(self._settings.bactopia.extra_args),
                 checkm2_args=tuple(self._settings.bactopia.checkm2_args),
                 sylph_args=tuple(self._settings.bactopia.sylph_args),
@@ -152,6 +175,16 @@ class SampleProcessor:
                     progress_callback,
                     message,
                 ),
+                phase_complete_callback=lambda phase, message: self._complete_phase(
+                    analysis.analysis_id,
+                    analysis.attempt,
+                    phase,
+                    message,
+                    workspace,
+                    output_dir,
+                    checkpoints,
+                    manifest,
+                ),
             )
             commands = BactopiaCommandBuilder.build(request)
             redacted_commands = _redact_commands(commands)
@@ -159,14 +192,16 @@ class SampleProcessor:
             self._repository.mark_running(
                 analysis.analysis_id, redacted_commands, workspace_uri
             )
-            self._set_phase(
-                analysis.analysis_id,
-                manifest,
-                ExecutionPhase.BACTOPIA_CORE,
-                workspace_uri,
-                progress_callback,
-                "Running Bactopia core.",
-            )
+            first_phase = _first_bactopia_phase(analysis.resume_from_phase)
+            if first_phase is not None:
+                self._set_phase(
+                    analysis.analysis_id,
+                    manifest,
+                    first_phase,
+                    workspace_uri,
+                    progress_callback,
+                    f"Starting {first_phase.value} phase.",
+                )
             execution = self._runner.run(request)
             _verify_registered_inputs(analysis.sample)
             self._set_phase(
@@ -214,6 +249,7 @@ class SampleProcessor:
                 phase=ExecutionPhase.SUCCEEDED.value,
                 completed_at=execution.completed_at_iso,
                 return_codes=list(execution.return_codes),
+                checkpoints=checkpoints,
                 artifacts=inventory_files(workspace, exclude={manifest.path}),
             )
             artifact_refs = self._artifacts.publish_tree(
@@ -265,6 +301,43 @@ class SampleProcessor:
             )
             raise
 
+    def _complete_phase(
+        self,
+        analysis_id: UUID,
+        attempt: int,
+        phase: str,
+        message: str,
+        workspace: Path,
+        output_dir: Path,
+        checkpoints: dict[str, dict[str, object]],
+        manifest: AttemptManifest,
+    ) -> None:
+        phase_value = phase.value if isinstance(phase, ExecutionPhase) else str(phase)
+        if phase_value not in {
+            ExecutionPhase.BACTOPIA_CORE.value,
+            ExecutionPhase.CHECKM2.value,
+            ExecutionPhase.SYLPH.value,
+        }:
+            return
+        checkpoint_path = _write_phase_checkpoint(
+            workspace, output_dir, analysis_id, attempt, phase_value
+        )
+        checkpoint_sha256 = _sha256_file(checkpoint_path)
+        checkpoint = {
+            "uri": checkpoint_path.resolve().as_uri(),
+            "sha256": checkpoint_sha256,
+            "phase": phase_value,
+        }
+        checkpoints[phase_value] = checkpoint
+        checkpoint_uri = str(checkpoint["uri"])
+        self._repository.complete_analysis_phase(
+            analysis_id,
+            phase_value,
+            checkpoint_uri,
+            checkpoint_sha256,
+        )
+        manifest.update(checkpoints=checkpoints, message=message)
+
     def _set_phase(
         self,
         analysis_id: UUID,
@@ -312,6 +385,109 @@ def _verify_registered_inputs(sample: RegisteredSample) -> None:
             raise ImmutableInputError(
                 f"Registered {role} checksum changed after registration: {path}"
             )
+
+
+def _write_phase_checkpoint(
+    workspace: Path,
+    output_dir: Path,
+    analysis_id: UUID,
+    attempt: int,
+    phase: str,
+) -> Path:
+    if phase == ExecutionPhase.BACTOPIA_CORE.value:
+        candidates = sorted(output_dir.rglob("*.fna.gz"))
+        if not candidates:
+            candidates = sorted(output_dir.rglob("*.fna"))
+        preferred = [path for path in candidates if path.parent.name == "assembler"]
+        required = preferred or candidates
+    else:
+        required = sorted(output_dir.rglob(f"{phase}.tsv"))
+    if not required:
+        raise ValueError(f"Cannot checkpoint {phase}: required output is missing")
+
+    checkpoint_dir = workspace / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"{phase}.json"
+    payload = {
+        "schema_version": "ubio-autobox-phase-checkpoint-1",
+        "analysis_id": str(analysis_id),
+        "attempt": attempt,
+        "phase": phase,
+        "output_root": "bactopia",
+        "files": [
+            {
+                "path": path.relative_to(output_dir).as_posix(),
+                "sha256": _sha256_file(path),
+                "size_bytes": path.stat().st_size,
+            }
+            for path in required
+        ],
+    }
+    checkpoint_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return checkpoint_path
+
+
+def _first_bactopia_phase(
+    completed_phase: ExecutionPhase | None,
+) -> ExecutionPhase | None:
+    return {
+        None: ExecutionPhase.BACTOPIA_CORE,
+        ExecutionPhase.BACTOPIA_CORE: ExecutionPhase.CHECKM2,
+        ExecutionPhase.CHECKM2: ExecutionPhase.SYLPH,
+        ExecutionPhase.SYLPH: None,
+    }[completed_phase]
+
+
+def _path_from_file_uri(uri: str) -> Path:
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        raise ValueError(f"Expected a file URI, got {uri!r}")
+    return Path(unquote(parsed.path))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_resume_checkpoint(analysis: AnalysisRequest) -> None:
+    checkpoint_uri = analysis.resume_checkpoint_uri
+    checkpoint_sha256 = analysis.resume_checkpoint_sha256
+    workspace_uri = analysis.resume_workspace_uri
+    resume_phase = analysis.resume_from_phase
+    if (
+        not checkpoint_uri
+        or not checkpoint_sha256
+        or not workspace_uri
+        or not resume_phase
+    ):
+        raise ValueError("Resume metadata is incomplete")
+    checkpoint = _path_from_file_uri(checkpoint_uri).resolve(strict=True)
+    workspace = _path_from_file_uri(workspace_uri).resolve(strict=True)
+    if not checkpoint.is_relative_to(workspace):
+        raise ValueError("Resume checkpoint escapes the retained workspace")
+    if _sha256_file(checkpoint) != checkpoint_sha256:
+        raise ValueError("Resume checkpoint checksum does not match the database")
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    if payload.get("phase") != resume_phase.value:
+        raise ValueError("Resume checkpoint phase does not match the database")
+    output_root = workspace / "bactopia"
+    for item in payload.get("files", []):
+        relative = Path(str(item["path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Resume checkpoint output escapes Bactopia workspace")
+        output = output_root / relative
+        if not output.exists():
+            raise ValueError(f"Resume checkpoint output is missing: {relative}")
+        if output.stat().st_size != int(item["size_bytes"]):
+            raise ValueError(f"Resume checkpoint size mismatch: {relative}")
+        if _sha256_file(output) != item["sha256"]:
+            raise ValueError(f"Resume checkpoint checksum mismatch: {relative}")
 
 
 def _redact_commands(

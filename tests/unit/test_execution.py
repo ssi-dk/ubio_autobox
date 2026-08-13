@@ -8,6 +8,7 @@ import pytest
 from ubio_autobox.domain.models import (
     AnalysisRequest,
     BactopiaRequest,
+    ExecutionPhase,
     RegisteredSample,
 )
 from ubio_autobox.execution import (
@@ -49,6 +50,80 @@ def test_bactopia_commands_are_argument_arrays(tmp_path: Path) -> None:
     assert commands[0][0] == "bactopia"
     assert str(request.samplesheet_path) in commands[0]
     assert all(isinstance(command, tuple) for command in commands)
+
+
+def test_bactopia_commands_accept_phase_specific_resources(tmp_path: Path) -> None:
+    sample = RegisteredSample(
+        batch_id=uuid4(),
+        sample_id=uuid4(),
+        batch_key="batch",
+        sample_key="sample",
+        input_fingerprint="a" * 64,
+        r1=tmp_path / "r1.fastq.gz",
+        r2=tmp_path / "r2.fastq.gz",
+    )
+    request = BactopiaRequest(
+        analysis=AnalysisRequest(
+            analysis_id=uuid4(),
+            sample=sample,
+            attempt=1,
+            pipeline_config_fingerprint="b" * 64,
+        ),
+        samplesheet_path=tmp_path / "samples.tsv",
+        output_dir=tmp_path / "output",
+        logs_dir=tmp_path / "logs",
+        executable="bactopia",
+        profile="docker",
+        max_cpus=8,
+        max_memory="8.GB",
+        core_max_memory="4.GB",
+        checkm2_max_memory="6.GB",
+        sylph_max_memory="12.GB",
+    )
+
+    commands = BactopiaCommandBuilder.build(request)
+
+    assert [command[command.index("--max_memory") + 1] for command in commands] == [
+        "4.GB",
+        "6.GB",
+        "12.GB",
+    ]
+
+
+def test_bactopia_resume_starts_after_last_completed_phase(tmp_path: Path) -> None:
+    sample = RegisteredSample(
+        batch_id=uuid4(),
+        sample_id=uuid4(),
+        batch_key="batch",
+        sample_key="sample",
+        input_fingerprint="a" * 64,
+        r1=tmp_path / "r1.fastq.gz",
+        r2=tmp_path / "r2.fastq.gz",
+    )
+    request = BactopiaRequest(
+        analysis=AnalysisRequest(
+            analysis_id=uuid4(),
+            sample=sample,
+            attempt=2,
+            pipeline_config_fingerprint="b" * 64,
+            resume_from_phase=ExecutionPhase.CHECKM2,
+        ),
+        samplesheet_path=tmp_path / "samples.tsv",
+        output_dir=tmp_path / "output",
+        logs_dir=tmp_path / "logs",
+        executable="bactopia",
+        profile="docker",
+        max_cpus=8,
+        max_memory="8.GB",
+    )
+
+    commands = BactopiaCommandBuilder.build(request)
+
+    assert len(commands) == 3
+    assert "--samples" in commands[0]
+    assert "--wf" in commands[1]
+    assert "--wf" in commands[2]
+    assert "-resume" in commands[2]
 
 
 def test_bactopia_4_samplesheet_contract(tmp_path: Path) -> None:

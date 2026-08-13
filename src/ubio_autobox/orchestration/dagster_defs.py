@@ -64,6 +64,24 @@ def sample_analysis(  # type: ignore[no-untyped-def]
         "UBIO_BACTOPIA_VERSION": settings.bactopia.version,
         "UBIO_BACTOPIA_MAX_CPUS": str(settings.bactopia.max_cpus),
         "UBIO_BACTOPIA_MAX_MEMORY": settings.bactopia.max_memory,
+        "UBIO_BACTOPIA_CORE_MAX_CPUS": _optional_env_value(
+            settings.bactopia.core_max_cpus
+        ),
+        "UBIO_BACTOPIA_CORE_MAX_MEMORY": _optional_env_value(
+            settings.bactopia.core_max_memory
+        ),
+        "UBIO_BACTOPIA_CHECKM2_MAX_CPUS": _optional_env_value(
+            settings.bactopia.checkm2_max_cpus
+        ),
+        "UBIO_BACTOPIA_CHECKM2_MAX_MEMORY": _optional_env_value(
+            settings.bactopia.checkm2_max_memory
+        ),
+        "UBIO_BACTOPIA_SYLPH_MAX_CPUS": _optional_env_value(
+            settings.bactopia.sylph_max_cpus
+        ),
+        "UBIO_BACTOPIA_SYLPH_MAX_MEMORY": _optional_env_value(
+            settings.bactopia.sylph_max_memory
+        ),
         "UBIO_BACTOPIA_DATABASE_VERSIONS": json.dumps(
             settings.bactopia.database_versions,
             sort_keys=True,
@@ -250,6 +268,10 @@ def _wall_time_seconds(value: str) -> int:
         raise ValueError("Slurm wall_time must use HH:MM:SS")
     hours, minutes, seconds = (int(part) for part in parts)
     return hours * 3600 + minutes * 60 + seconds
+
+
+def _optional_env_value(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _slurm_run_options(settings: AppSettings) -> dict[str, object]:

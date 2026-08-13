@@ -14,6 +14,12 @@ bactopia:
   runner: subprocess
   max_cpus: 4
   max_memory: 16.GB
+  core_max_cpus: 4
+  core_max_memory: 16.GB
+  checkm2_max_cpus: 4
+  checkm2_max_memory: 16.GB
+  sylph_max_cpus: 4
+  sylph_max_memory: 16.GB
   image: null
   container_digest: null
   nextflow_version: 26.04.6

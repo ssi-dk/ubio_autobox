@@ -24,6 +24,7 @@ from ubio_autobox.domain.models import (
     ExecutionPhase,
     FileRole,
     NormalizedResultSet,
+    PhaseStatus,
     RegisteredSample,
     ValidatedSample,
 )
@@ -190,6 +191,10 @@ class SqlAlchemyResultRepository:
                     == pipeline_config_fingerprint,
                 )
             )
+            resume_from_phase: ExecutionPhase | None = None
+            resume_workspace_uri: str | None = None
+            resume_checkpoint_uri: str | None = None
+            resume_checkpoint_sha256: str | None = None
             if analysis is None:
                 effective_run_id = dagster_run_id or f"manual-{uuid4()}"
                 queued_at = utc_now()
@@ -216,10 +221,24 @@ class SqlAlchemyResultRepository:
                         analysis_id=analysis.analysis_id,
                         attempt=analysis.attempt,
                         phase=ExecutionPhase.QUEUED.value,
+                        status=PhaseStatus.RUNNING.value,
                         started_at=queued_at,
                     )
                 )
             elif analysis.status == AnalysisStatus.FAILED.value:
+                previous_attempt = analysis.attempt
+                resume_event = self._resume_event(
+                    session, analysis.analysis_id, previous_attempt
+                )
+                if resume_event is not None and analysis.failed_workspace_uri:
+                    try:
+                        resume_from_phase = ExecutionPhase(resume_event.phase)
+                    except ValueError:
+                        resume_from_phase = None
+                    else:
+                        resume_workspace_uri = analysis.failed_workspace_uri
+                        resume_checkpoint_uri = resume_event.checkpoint_uri
+                        resume_checkpoint_sha256 = resume_event.checkpoint_sha256
                 history = list(analysis.attempt_history or [])
                 history.append(self._attempt_history_entry(analysis))
                 analysis.attempt += 1
@@ -253,6 +272,10 @@ class SqlAlchemyResultRepository:
                 attempt=analysis.attempt,
                 pipeline_config_fingerprint=analysis.pipeline_config_fingerprint,
                 dagster_run_id=analysis.dagster_run_id,
+                resume_from_phase=resume_from_phase,
+                resume_workspace_uri=resume_workspace_uri,
+                resume_checkpoint_uri=resume_checkpoint_uri,
+                resume_checkpoint_sha256=resume_checkpoint_sha256,
             )
 
     def mark_running(
@@ -287,6 +310,31 @@ class SqlAlchemyResultRepository:
             if workspace_uri is not None:
                 analysis.attempt_workspace_uri = workspace_uri
             self._record_phase_event(session, analysis, phase_value, updated_at)
+
+    def complete_analysis_phase(
+        self,
+        analysis_id: UUID,
+        phase: ExecutionPhase | str,
+        checkpoint_uri: str | None = None,
+        checkpoint_sha256: str | None = None,
+    ) -> None:
+        with self._sessions.begin() as session:
+            analysis = self._require_analysis(session, analysis_id)
+            phase_value = (
+                phase.value if isinstance(phase, ExecutionPhase) else str(phase)
+            )
+            updated_at = utc_now()
+            active = self._active_phase_event(session, analysis)
+            if active is None or active.phase != phase_value:
+                raise AnalysisNotFoundError(
+                    f"Phase {phase_value!r} is not active for analysis {analysis_id}"
+                )
+            active.status = PhaseStatus.SUCCEEDED.value
+            active.completed_at = updated_at
+            active.checkpoint_uri = checkpoint_uri
+            active.checkpoint_sha256 = checkpoint_sha256
+            analysis.execution_phase = phase_value
+            analysis.phase_updated_at = updated_at
 
     def complete_analysis(
         self, results: NormalizedResultSet, workspace_uri: str | None = None
@@ -378,6 +426,7 @@ class SqlAlchemyResultRepository:
                 ExecutionPhase.SUCCEEDED.value,
                 completed_at,
                 terminal=True,
+                status=PhaseStatus.SUCCEEDED.value,
             )
 
     def fail_analysis(
@@ -397,12 +446,29 @@ class SqlAlchemyResultRepository:
             if workspace_uri is not None:
                 analysis.attempt_workspace_uri = workspace_uri
                 analysis.failed_workspace_uri = workspace_uri
+                for event in session.scalars(
+                    select(AnalysisPhaseEventModel).where(
+                        AnalysisPhaseEventModel.analysis_id == analysis.analysis_id,
+                        AnalysisPhaseEventModel.attempt == analysis.attempt,
+                        AnalysisPhaseEventModel.checkpoint_uri.is_not(None),
+                    )
+                ):
+                    event.checkpoint_uri = _relocate_checkpoint_uri(
+                        event.checkpoint_uri, workspace_uri
+                    )
+            active = self._active_phase_event(session, analysis)
+            if active is not None:
+                active.status = PhaseStatus.FAILED.value
+                active.completed_at = completed_at
+                active.error_summary = error[-8000:]
             self._record_phase_event(
                 session,
                 analysis,
                 ExecutionPhase.FAILED.value,
                 completed_at,
                 terminal=True,
+                status=PhaseStatus.FAILED.value,
+                error_summary=error[-8000:],
             )
 
     def get_registered_sample(self, sample_id: UUID) -> RegisteredSample:
@@ -615,8 +681,42 @@ class SqlAlchemyResultRepository:
         started_at: datetime,
         *,
         terminal: bool = False,
+        status: str = PhaseStatus.RUNNING.value,
+        checkpoint_uri: str | None = None,
+        checkpoint_sha256: str | None = None,
+        error_summary: str | None = None,
     ) -> None:
-        active = session.scalar(
+        active = SqlAlchemyResultRepository._active_phase_event(session, analysis)
+        if active is not None and active.phase == phase:
+            if terminal:
+                active.completed_at = started_at
+                active.status = status
+                active.error_summary = error_summary
+            return
+        if active is not None:
+            active.completed_at = started_at
+            if active.status == PhaseStatus.RUNNING.value:
+                active.status = PhaseStatus.SUCCEEDED.value
+        session.add(
+            AnalysisPhaseEventModel(
+                phase_event_id=str(uuid4()),
+                analysis_id=analysis.analysis_id,
+                attempt=analysis.attempt,
+                phase=phase,
+                status=status,
+                started_at=started_at,
+                completed_at=started_at if terminal else None,
+                checkpoint_uri=checkpoint_uri,
+                checkpoint_sha256=checkpoint_sha256,
+                error_summary=error_summary,
+            )
+        )
+
+    @staticmethod
+    def _active_phase_event(
+        session: Session, analysis: AnalysisRunModel
+    ) -> AnalysisPhaseEventModel | None:
+        return session.scalar(
             select(AnalysisPhaseEventModel)
             .where(
                 AnalysisPhaseEventModel.analysis_id == analysis.analysis_id,
@@ -625,21 +725,27 @@ class SqlAlchemyResultRepository:
             )
             .order_by(AnalysisPhaseEventModel.started_at.desc())
         )
-        if active is not None and active.phase == phase:
-            if terminal:
-                active.completed_at = started_at
-            return
-        if active is not None:
-            active.completed_at = started_at
-        session.add(
-            AnalysisPhaseEventModel(
-                phase_event_id=str(uuid4()),
-                analysis_id=analysis.analysis_id,
-                attempt=analysis.attempt,
-                phase=phase,
-                started_at=started_at,
-                completed_at=started_at if terminal else None,
+
+    @staticmethod
+    def _resume_event(
+        session: Session, analysis_id: str, attempt: int
+    ) -> AnalysisPhaseEventModel | None:
+        return session.scalar(
+            select(AnalysisPhaseEventModel)
+            .where(
+                AnalysisPhaseEventModel.analysis_id == analysis_id,
+                AnalysisPhaseEventModel.attempt == attempt,
+                AnalysisPhaseEventModel.status == PhaseStatus.SUCCEEDED.value,
+                AnalysisPhaseEventModel.phase.in_(
+                    [
+                        ExecutionPhase.BACTOPIA_CORE.value,
+                        ExecutionPhase.CHECKM2.value,
+                        ExecutionPhase.SYLPH.value,
+                    ]
+                ),
+                AnalysisPhaseEventModel.checkpoint_uri.is_not(None),
             )
+            .order_by(AnalysisPhaseEventModel.started_at.desc())
         )
 
     @classmethod
@@ -667,8 +773,12 @@ class SqlAlchemyResultRepository:
             "phase_event_id": event.phase_event_id,
             "attempt": event.attempt,
             "phase": event.phase,
+            "status": event.status or PhaseStatus.SUCCEEDED.value,
             "started_at": event.started_at,
             "completed_at": completed_at,
+            "checkpoint_uri": event.checkpoint_uri,
+            "checkpoint_sha256": event.checkpoint_sha256,
+            "error_summary": event.error_summary,
             "duration_seconds": _duration_seconds(event.started_at, end),
         }
 
@@ -746,3 +856,20 @@ def _logs_uri(workspace_uri: str | None) -> str | None:
     if parsed.scheme != "file":
         return None
     return Path(unquote(parsed.path), "logs").as_uri()
+
+
+def _relocate_checkpoint_uri(
+    checkpoint_uri: str | None, retained_workspace_uri: str
+) -> str | None:
+    if checkpoint_uri is None:
+        return None
+    checkpoint = Path(unquote(urlparse(checkpoint_uri).path))
+    retained = Path(unquote(urlparse(retained_workspace_uri).path))
+    if checkpoint.exists():
+        return checkpoint.resolve().as_uri()
+    try:
+        marker = checkpoint.parts.index("staging")
+        relative = Path(*checkpoint.parts[marker + 2 :])
+    except (ValueError, IndexError):
+        return checkpoint_uri
+    return (retained / relative).resolve().as_uri()

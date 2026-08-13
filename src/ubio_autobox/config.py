@@ -80,6 +80,12 @@ class BactopiaSettings(BaseModel):
     runner: Literal["subprocess", "fake"] = "subprocess"
     max_cpus: int = Field(default=4, ge=1)
     max_memory: str = "16.GB"
+    core_max_cpus: int | None = Field(default=None, ge=1)
+    core_max_memory: str | None = None
+    checkm2_max_cpus: int | None = Field(default=None, ge=1)
+    checkm2_max_memory: str | None = None
+    sylph_max_cpus: int | None = Field(default=None, ge=1)
+    sylph_max_memory: str | None = None
     image: str | None = None
     container_digest: str | None = None
     nextflow_version: str | None = "26.04.6"
@@ -223,6 +229,20 @@ def load_settings(path: Path | str | None = None) -> AppSettings:
         overrides.setdefault("bactopia", {})["max_cpus"] = int(max_cpus)
     if max_memory := os.getenv("UBIO_BACTOPIA_MAX_MEMORY"):
         overrides.setdefault("bactopia", {})["max_memory"] = max_memory
+    for environment_name, field_name in (
+        ("UBIO_BACTOPIA_CORE_MAX_CPUS", "core_max_cpus"),
+        ("UBIO_BACTOPIA_CHECKM2_MAX_CPUS", "checkm2_max_cpus"),
+        ("UBIO_BACTOPIA_SYLPH_MAX_CPUS", "sylph_max_cpus"),
+    ):
+        if raw_value := os.getenv(environment_name):
+            overrides.setdefault("bactopia", {})[field_name] = int(raw_value)
+    for environment_name, field_name in (
+        ("UBIO_BACTOPIA_CORE_MAX_MEMORY", "core_max_memory"),
+        ("UBIO_BACTOPIA_CHECKM2_MAX_MEMORY", "checkm2_max_memory"),
+        ("UBIO_BACTOPIA_SYLPH_MAX_MEMORY", "sylph_max_memory"),
+    ):
+        if raw_value := os.getenv(environment_name):
+            overrides.setdefault("bactopia", {})[field_name] = raw_value
     if image := os.getenv("UBIO_BACTOPIA_IMAGE"):
         overrides.setdefault("bactopia", {})["image"] = image
     if digest := os.getenv("UBIO_BACTOPIA_CONTAINER_DIGEST"):

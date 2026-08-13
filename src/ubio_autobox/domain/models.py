@@ -37,6 +37,12 @@ class ExecutionPhase(StrEnum):
     FAILED = "failed"
 
 
+class PhaseStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class FileRole(StrEnum):
     R1 = "r1"
     R2 = "r2"
@@ -99,6 +105,10 @@ class AnalysisRequest:
     attempt: int
     pipeline_config_fingerprint: str
     dagster_run_id: str | None = None
+    resume_from_phase: ExecutionPhase | None = None
+    resume_workspace_uri: str | None = None
+    resume_checkpoint_uri: str | None = None
+    resume_checkpoint_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +124,14 @@ class BactopiaRequest:
     extra_args: tuple[str, ...] = ()
     checkm2_args: tuple[str, ...] = ()
     sylph_args: tuple[str, ...] = ()
+    core_max_cpus: int | None = None
+    core_max_memory: str | None = None
+    checkm2_max_cpus: int | None = None
+    checkm2_max_memory: str | None = None
+    sylph_max_cpus: int | None = None
+    sylph_max_memory: str | None = None
     phase_callback: Callable[[str, str], None] | None = None
+    phase_complete_callback: Callable[[str, str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

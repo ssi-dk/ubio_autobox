@@ -155,10 +155,14 @@ class AnalysisPhaseEventModel(Base):
     )
     attempt: Mapped[int] = mapped_column(Integer, nullable=False)
     phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkpoint_uri: Mapped[str | None] = mapped_column(Text)
+    checkpoint_sha256: Mapped[str | None] = mapped_column(String(64))
+    error_summary: Mapped[str | None] = mapped_column(Text)
 
 
 class SoftwareComponentModel(Base):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,26 @@ class LocalArtifactStore:
             raise ImmutableInputError(f"Attempt workspace already exists: {staging}")
         staging.mkdir(parents=True)
         return staging
+
+    def seed_attempt_from_workspace(self, source: Path, target: Path) -> None:
+        """Copy the prior Bactopia tree into a new resumable attempt."""
+
+        source = source.expanduser().resolve(strict=True)
+        target = target.expanduser().resolve()
+        if not source.is_relative_to(self._root):
+            raise ImmutableInputError(f"Resume source escapes artifact root: {source}")
+        source_bactopia = source / "bactopia"
+        if not source_bactopia.is_dir():
+            raise ImmutableInputError(
+                f"Resume checkpoint has no Bactopia output tree: {source_bactopia}"
+            )
+        target.mkdir(parents=True, exist_ok=True)
+        destination = target / "bactopia"
+        if destination.exists():
+            raise ImmutableInputError(
+                f"Resume destination already exists: {destination}"
+            )
+        shutil.copytree(source_bactopia, destination)
 
     def publish_tree(self, analysis_id: UUID, root: Path) -> tuple[ArtifactRef, ...]:
         root = root.resolve(strict=True)

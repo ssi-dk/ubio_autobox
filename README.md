@@ -167,6 +167,12 @@ Apptainer runtime. `dagster-slurm` packages the locked Linux Pixi environment
 for the allocation; Apptainer itself is expected to be installed by the
 cluster.
 
+The single allocation contains explicit sequential checkpoints for Bactopia
+core, CheckM2, and Sylph. Each phase can have its own `max_cpus` and
+`max_memory` settings. A failed attempt records the completed phase and its
+output checksum; a retry validates that checkpoint and resumes with the next
+phase instead of rerunning completed scientific work.
+
 ## Outputs
 
 Successful attempts are published immutably beneath:

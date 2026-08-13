@@ -10,6 +10,7 @@ from .models import (
     FileDigest,
     FileRole,
     NormalizedResultSet,
+    PhaseStatus,
     RegisteredSample,
     ValidatedSample,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "FileDigest",
     "FileRole",
     "NormalizedResultSet",
+    "PhaseStatus",
     "RegisteredSample",
     "ValidatedSample",
 ]

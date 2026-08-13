@@ -46,6 +46,14 @@ class ResultRepository(Protocol):
         workspace_uri: str | None = None,
     ) -> None: ...
 
+    def complete_analysis_phase(
+        self,
+        analysis_id: UUID,
+        phase: ExecutionPhase | str,
+        checkpoint_uri: str | None = None,
+        checkpoint_sha256: str | None = None,
+    ) -> None: ...
+
     def complete_analysis(
         self, results: NormalizedResultSet, workspace_uri: str | None = None
     ) -> None: ...
@@ -78,6 +86,8 @@ class ArtifactStore(Protocol):
     def allocate_attempt(
         self, sample_id: UUID, analysis_id: UUID, attempt: int
     ) -> Path: ...
+
+    def seed_attempt_from_workspace(self, source: Path, target: Path) -> None: ...
 
     def publish_tree(
         self, analysis_id: UUID, root: Path

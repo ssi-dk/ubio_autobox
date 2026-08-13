@@ -52,46 +52,60 @@ def write_bactopia_samplesheet(sample: RegisteredSample, path: Path) -> None:
 
 
 class BactopiaCommandBuilder:
-    """Resolve the complete three-command Bactopia workflow."""
+    """Resolve the three sequential Bactopia phases and their resources."""
 
     @staticmethod
     def build(request: BactopiaRequest) -> tuple[tuple[str, ...], ...]:
         _validate_extra_args(request.extra_args)
         _validate_extra_args(request.checkm2_args)
         _validate_extra_args(request.sylph_args)
-        common = (
-            "-profile",
-            request.profile,
-            "--max_cpus",
-            str(request.max_cpus),
-            "--max_memory",
-            request.max_memory,
+        resume_index = _resume_start_index(request.analysis.resume_from_phase)
+        core_common = _common(
+            request,
+            request.core_max_cpus,
+            request.core_max_memory,
+            resume=resume_index == 1,
+        )
+        checkm2_common = _common(
+            request,
+            request.checkm2_max_cpus,
+            request.checkm2_max_memory,
+            resume=resume_index == 2,
+        )
+        sylph_common = _common(
+            request,
+            request.sylph_max_cpus,
+            request.sylph_max_memory,
+            resume=resume_index == 3,
         )
         core = (
             request.executable,
+            *core_common[:1],
             "--samples",
             str(request.samplesheet_path),
             "--outdir",
             str(request.output_dir),
-            *common,
+            *core_common[1:],
             *request.extra_args,
         )
         checkm2 = (
             request.executable,
+            *checkm2_common[:1],
             "--wf",
             "checkm2",
             "--bactopia",
             str(request.output_dir),
-            *common,
+            *checkm2_common[1:],
             *request.checkm2_args,
         )
         sylph = (
             request.executable,
+            *sylph_common[:1],
             "--wf",
             "sylph",
             "--bactopia",
             str(request.output_dir),
-            *common,
+            *sylph_common[1:],
             *request.sylph_args,
         )
         return core, checkm2, sylph
@@ -107,7 +121,11 @@ class SubprocessBactopiaRunner:
         started = _utc_iso()
         return_codes: list[int] = []
 
+        resume_index = _resume_start_index(request.analysis.resume_from_phase)
         for index, command in enumerate(commands, start=1):
+            if index < resume_index:
+                return_codes.append(0)
+                continue
             if request.phase_callback is not None:
                 request.phase_callback(
                     _phase_for_command(index),
@@ -137,6 +155,11 @@ class SubprocessBactopiaRunner:
                 raise ExecutionFailedError(
                     f"Bactopia command {index} failed with exit code "
                     f"{result.returncode}; see {stderr_path}"
+                )
+            if request.phase_complete_callback is not None:
+                request.phase_complete_callback(
+                    _phase_for_command(index),
+                    f"Completed Bactopia command {index} of {len(commands)}.",
                 )
 
         return ExecutionResult(
@@ -234,7 +257,10 @@ class FakeBactopiaRunner:
                 }
             ],
         )
+        resume_index = _resume_start_index(request.analysis.resume_from_phase)
         for index, command in enumerate(commands, start=1):
+            if index < resume_index:
+                continue
             if request.phase_callback is not None:
                 request.phase_callback(
                     _phase_for_command(index),
@@ -244,6 +270,11 @@ class FakeBactopiaRunner:
                 f"fake execution: {command!r}\n", encoding="utf-8"
             )
             (request.logs_dir / f"{index:02d}.stderr.log").touch()
+            if request.phase_complete_callback is not None:
+                request.phase_complete_callback(
+                    _phase_for_command(index),
+                    f"Completed deterministic test command {index} of {len(commands)}.",
+                )
 
         return ExecutionResult(
             analysis_id=request.analysis.analysis_id,
@@ -291,6 +322,7 @@ def _validate_extra_args(arguments: tuple[str, ...]) -> None:
         "--queue",
         "--cluster_opts",
         "--executor",
+        "-resume",
     }
     for argument in arguments:
         flag = argument.partition("=")[0]
@@ -306,3 +338,30 @@ def _phase_for_command(index: int) -> str:
         2: "checkm2",
         3: "sylph",
     }[index]
+
+
+def _common(
+    request: BactopiaRequest,
+    max_cpus: int | None,
+    max_memory: str | None,
+    *,
+    resume: bool,
+) -> tuple[str, ...]:
+    return (("-resume",) if resume else ()) + (
+        "-profile",
+        request.profile,
+        "--max_cpus",
+        str(max_cpus or request.max_cpus),
+        "--max_memory",
+        max_memory or request.max_memory,
+    )
+
+
+def _resume_start_index(phase: object) -> int:
+    if phase == "bactopia_core":
+        return 2
+    if phase == "checkm2":
+        return 3
+    if phase == "sylph":
+        return 4
+    return 1

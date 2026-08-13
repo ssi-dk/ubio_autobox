@@ -10,7 +10,11 @@ from ubio_autobox.domain.errors import (
     ExecutionFailedError,
     ImmutableInputError,
 )
-from ubio_autobox.domain.models import BactopiaRequest, ExecutionResult
+from ubio_autobox.domain.models import (
+    BactopiaRequest,
+    ExecutionPhase,
+    ExecutionResult,
+)
 from ubio_autobox.execution import FakeBactopiaRunner, LocalArtifactStore
 from ubio_autobox.execution.factory import build_repository
 from ubio_autobox.execution.processor import SampleProcessor
@@ -143,9 +147,13 @@ def test_new_analysis_flushes_before_initial_phase_event(app_settings) -> None:
     with repository.engine.begin() as connection:
         connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
-    sample = FilesystemInputRegistry(
-        app_settings.paths.incoming_root, repository, stability_observations=1
-    ).discover_and_register().samples[0]
+    sample = (
+        FilesystemInputRegistry(
+            app_settings.paths.incoming_root, repository, stability_observations=1
+        )
+        .discover_and_register()
+        .samples[0]
+    )
 
     analysis = repository.ensure_analysis(
         sample.sample_id, app_settings.pipeline_fingerprint()
@@ -157,6 +165,61 @@ def test_new_analysis_flushes_before_initial_phase_event(app_settings) -> None:
     assert status is not None
     assert status["analysis_id"] == str(analysis.analysis_id)
     assert [event["phase"] for event in status["phase_history"]] == ["queued"]
+
+
+def test_failed_analysis_exposes_completed_checkpoint_for_resume(app_settings) -> None:
+    make_batch(app_settings.paths.incoming_root)
+    repository = build_repository(app_settings)
+    sample = (
+        FilesystemInputRegistry(
+            app_settings.paths.incoming_root, repository, stability_observations=1
+        )
+        .discover_and_register()
+        .samples[0]
+    )
+    analysis = repository.ensure_analysis(
+        sample.sample_id, app_settings.pipeline_fingerprint(), "run-1"
+    )
+    artifacts = LocalArtifactStore(app_settings.paths.artifact_root)
+    workspace = artifacts.allocate_attempt(
+        sample.sample_id, analysis.analysis_id, analysis.attempt
+    )
+    (workspace / "bactopia").mkdir()
+    checkpoint = workspace / "bactopia-core.json"
+    checkpoint.write_text("checkpoint\n", encoding="utf-8")
+
+    repository.update_analysis_phase(
+        analysis.analysis_id, ExecutionPhase.BACTOPIA_CORE, workspace.as_uri()
+    )
+    repository.complete_analysis_phase(
+        analysis.analysis_id,
+        ExecutionPhase.BACTOPIA_CORE,
+        checkpoint.as_uri(),
+        "a" * 64,
+    )
+    retained = artifacts.retain_failure(workspace)
+    repository.fail_analysis(
+        analysis.analysis_id, "synthetic failure", retained.as_uri()
+    )
+
+    retried = repository.ensure_analysis(
+        sample.sample_id, app_settings.pipeline_fingerprint(), "run-2"
+    )
+
+    assert retried.attempt == 2
+    assert retried.resume_from_phase is ExecutionPhase.BACTOPIA_CORE
+    assert retried.resume_workspace_uri == retained.as_uri()
+    assert retried.resume_checkpoint_uri == (retained / "bactopia-core.json").as_uri()
+    status = repository.get_analysis_status(
+        sample.sample_id, app_settings.pipeline_fingerprint()
+    )
+    assert status is not None
+    assert status["phase_history"][1]["status"] == "succeeded"
+    assert (
+        status["phase_history"][1]["checkpoint_uri"]
+        == (retained / "bactopia-core.json").as_uri()
+    )
+    assert status["phase_history"][2]["status"] == "failed"
 
 
 def test_processing_rechecks_immutable_registered_reads(app_settings) -> None:
