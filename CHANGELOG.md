@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Rebuilt the service around immutable batch ingestion, UUID identity, and
+  portable SQLAlchemy persistence.
+- Added one-allocation-per-sample Dagster and `dagster-slurm` orchestration.
+- Added Bactopia 4 core, CheckM2, and Sylph execution/parsing.
+- Added strict and extended AllTheBacteria 2025-05 Parquet projections.
+- Added local/Compose/Slurm deployment configuration and compatibility policy.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

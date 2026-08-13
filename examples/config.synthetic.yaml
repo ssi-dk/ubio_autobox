@@ -1,0 +1,21 @@
+paths:
+  incoming_root: .ubio-synthetic/incoming
+  artifact_root: .ubio-synthetic/artifacts
+  cache_root: .ubio-synthetic/cache
+database:
+  url: duckdb:///./.ubio-synthetic/state/results.duckdb
+sensor:
+  interval_seconds: 5
+  stability_observations: 1
+bactopia:
+  version: 4.0.0
+  executable: bactopia
+  profile: docker
+  runner: fake
+  max_cpus: 1
+  max_memory: 1.GB
+  nextflow_version: 26.04.6
+execution:
+  deployment: local
+  container_runtime: docker
+atb_schema_version: 2025-05

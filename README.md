@@ -1,203 +1,219 @@
 # ubio_autobox
 
-An automated bioinformatics pipeline for processing Illumina sequencing data using Bactopia. This project automatically detects new samples in an input directory, tracks their processing status, and runs Bactopia analysis on unprocessed samples using Dagster orchestration.
+`ubio_autobox` turns an immutable pair of Illumina FASTQ files into normalized,
+provenance-rich Bactopia results and AllTheBacteria-compatible Parquet tables.
+Dagster handles discovery and idempotency; the scientific and database behavior
+remains usable without Dagster.
 
-## Overview
+The service is intentionally comparison-compatible, not an AllTheBacteria
+mirror. It does not invent public accessions, import the public dataset, or
+claim that local samples belong to an ATB release.
 
-The pipeline works by:
-1. **Sample Discovery**: Scanning the input directory for new FASTQ files
-2. **Sample Tracking**: Storing sample metadata in a DuckDB database
-3. **Dynamic Processing**: Creating dynamic partitions for each unprocessed sample
-4. **Automated Analysis**: Running Bactopia on each sample via a sensor-triggered job
-5. **Progress Monitoring**: Providing visual reports of processing status
+## Compatibility baseline
 
-## Tech Stack
+The rebuild uses the newest mutually compatible versions verified on
+2026-07-29:
 
-- **[Bactopia](https://bactopia.github.io/)**: Bacterial genome analysis pipeline
-- **[Dagster](https://dagster.io/)**: Data orchestration platform
-- **[DuckDB](https://duckdb.org/)**: Embedded analytical database
-- **[Pixi](https://pixi.sh/)**: Package and environment management
+| Component | Baseline | Why |
+|---|---:|---|
+| Bactopia | 4.0.0 | Current documented Bactopia release and output contract |
+| Nextflow | 26.04.6 | Current Linux resolution compatible with Bactopia 4.0.0 |
+| Dagster | 1.13.x | Newest series supported by `dagster-slurm` 1.15.1 |
+| dagster-slurm | 1.15.1 | Current package release used for local/Slurm parity |
+| AllTheBacteria metadata | 2025-05 | Current complete aggregate metadata model |
+| Python | 3.11 | Stable common denominator for local and HPC deployments |
 
-## Project Structure
+These are compatibility pins, not a promise to remain on old releases.
+Upgrades are expected after contract fixtures pass; see
+[`docs/adr/0004-version-policy.md`](docs/adr/0004-version-policy.md).
+Bactopia task-container names are collected from Nextflow traces, with
+`sha256` digests retained whenever the runtime reports them.
 
-```
-ubio_autobox/
-├── data/
-│   ├── database/           # DuckDB databases
-│   └── illumina_workflow/
-│       ├── input/          # Place FASTQ files here
-│       └── output/         # Bactopia results
-├── ubio_autobox/
-│   ├── assets/
-│   │   └── illumina_workflow.py  # Main pipeline assets
-│   └── definitions.py      # Dagster definitions
-├── pixi.toml              # Environment and dependencies
-└── pyproject.toml         # Python project configuration
-```
+Authoritative upstream documentation:
+[Bactopia](https://bactopia.io/),
+[Dagster](https://docs.dagster.io/),
+[`dagster-slurm`](https://github.com/ascii-supply-networks/dagster-slurm),
+and [AllTheBacteria metadata](https://allthebacteria.org/docs/metadata_sqlite/).
 
-## Getting Started
+## Input contract
 
-### Prerequisites
+Create a complete batch, then add each sample's empty `READY` marker last:
 
-- [Pixi](https://pixi.sh/) for environment management
-- Docker (for Bactopia execution)
-
-### Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/ssi-dk/ubio_autobox/
-   cd ubio_autobox
-   ```
-
-2. **Set up the environment with Pixi**:
-   ```bash
-   pixi install
-   ```
-
-3. **Activate the Pixi environment**:
-   ```bash
-   pixi shell
-   ```
-
-4. **Install the package in development mode**:
-   ```bash
-   pip install -e ".[dev]"
-   ```
-
-### Running the Pipeline
-
-1. **Start the Dagster UI**:
-   ```bash
-   dagster dev
-   ```
-
-2. **Access the web interface**:
-   Open http://localhost:3000 in your browser
-
-3. **Add FASTQ files**:
-   Place your Illumina FASTQ files (R1/R2 pairs) in `data/illumina_workflow/input/`
-
-4. **Monitor processing**:
-   The sensor will automatically detect new samples and create processing jobs
-
-## Pipeline Assets
-
-### Core Assets
-
-- **`illumina_samples_in_folder`**: Discovers FASTQ files using `bactopia-prepare`
-- **`new_illumina_samples`**: Identifies new samples by comparing with database
-- **`unprocessed_illumina_samples`**: Retrieves samples that haven't been processed
-- **`run_unprocessed_illumina_sample`**: Processes individual samples (partitioned)
-- **`illumina_samples_plot`**: Generates processing status reports
-
-### Dynamic Partitioning
-
-The pipeline uses dynamic partitions to process each sample independently:
-- Each unprocessed sample gets its own partition
-- Samples can be processed in parallel
-- Failed samples don't block others
-
-### Sensor
-
-The `unprocessed_illumina_samples_sensor` automatically:
-- Detects new unprocessed samples
-- Creates dynamic partitions
-- Triggers processing jobs
-
-## Configuration
-
-### Input Directory
-
-By default, the pipeline looks for FASTQ files in `./data/illumina_workflow/input`. You can configure this in the asset configuration.
-
-### Bactopia Settings
-
-The pipeline runs Bactopia with Docker profile. The command can be customized in the `run_bactopia` function in `illumina_workflow.py`.
-
-### Database
-
-Sample metadata is stored in DuckDB at `./data/database/seqsample.duckdb`. The database tracks:
-- Sample names and file paths
-- Species and genome size information
-- Processing status
-- Metadata
-
-## Development
-
-### Adding Dependencies
-
-Add new dependencies to `pixi.toml`:
-
-```toml
-[dependencies]
-new-package = ">=1.0.0"
+```text
+.ubio/incoming/batch-2026-001/
+├── samples.csv
+└── samples/
+    └── isolate-001/
+        ├── reads_R1.fastq.gz
+        ├── reads_R2.fastq.gz
+        └── READY
 ```
 
-Then run:
+`samples.csv`:
+
+```csv
+sample_key,r1,r2,insdc_sample_accession,source_namespace,source_record_id
+isolate-001,samples/isolate-001/reads_R1.fastq.gz,samples/isolate-001/reads_R2.fastq.gz,,,
+```
+
+The registry requires safe keys, paths confined to the batch, distinct gzip
+FASTQs, a `READY` marker, stable file observations, and SHA-256 checksums.
+Registration makes the manifest and inputs immutable. Changed inputs are
+invalidated and must be submitted as a new batch/sample.
+
+Additional manifest columns are retained as source metadata. When a manifest
+contains `species`, the value is passed into Bactopia's `species` samplesheet
+column.
+
+## Local development
+
 ```bash
 pixi install
+pixi run ubio-autobox migrate
+pixi run dagster-dev
 ```
 
-### Running Tests
+`init-db` remains a compatibility alias for the same idempotent packaged
+Alembic migration path.
+
+Dagster scans every 30 seconds by default (`sensor.interval_seconds`). Each
+registered `sample_id` becomes a dynamic partition and receives an idempotent
+run key derived from the sample UUID, input fingerprint, and pipeline
+configuration fingerprint. A sample is not re-queued on every poll once it is
+running, failed, or complete; use Dagster re-execution for a visible retry.
+
+For a dependency-free scientific tracer test:
 
 ```bash
-pytest ubio_autobox_tests
+UBIO_BACTOPIA_RUNNER=fake pixi run pytest
 ```
 
-### Code Quality
+For a fast end-to-end smoke run that generates tiny valid paired FASTQs,
+metadata, `READY` markers, registrations, artifacts, and normalized results:
 
-The project uses standard Python linting. Run checks with:
 ```bash
-pixi run lint  # if configured
+pixi run ubio-autobox synthetic-run \
+  --config examples/config.synthetic.yaml \
+  --samples 3
 ```
 
-## Usage Examples
+Use `--no-process` when you only want to generate the landing batch for the
+periodic Dagster sensor. To run Dagster against that isolated synthetic
+configuration, use:
 
-### Processing New Samples
-
-1. Copy FASTQ files to the input directory:
-   ```bash
-   cp /path/to/sample_R1.fastq.gz /path/to/sample_R2.fastq.gz data/illumina_workflow/input/
-   ```
-
-2. The sensor will automatically detect and process them within the sensor interval
-
-3. Monitor progress in the Dagster UI at http://localhost:3000
-
-### Manual Processing
-
-You can also manually trigger processing:
-
-1. In the Dagster UI, go to the "Assets" tab
-2. Materialize `illumina_samples_in_folder` to discover new samples
-3. Materialize `new_illumina_samples` to update the database
-4. Use the "Jobs" tab to run individual sample processing jobs
-
-## Troubleshooting
-
-### Common Issues
-
-- **Bactopia not found**: Ensure Bactopia is installed and accessible in the Pixi environment
-- **Docker issues**: Make sure Docker is running for Bactopia execution
-- **Permission errors**: Check that the pipeline has write access to output directories
-- **Database errors**: Ensure DuckDB database directory exists and is writable
-
-### Logs
-
-Check Dagster logs in the UI or run with verbose logging:
 ```bash
-dagster dev --log-level DEBUG
+UBIO_CONFIG_FILE="$PWD/examples/config.synthetic.yaml" pixi run dagster-dev
 ```
 
-## Contributing
+Synthetic runs always use the fake Bactopia adapter; keep their
+`.ubio-synthetic` data root separate from real inputs.
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+The Bactopia and Nextflow packages are locked for `linux-64`. On macOS, use
+the fake runner for host-side development and Docker Compose for real
+scientific processing. A Linux host can run the pinned environment directly.
 
-## License
+For a direct registered-sample run:
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+```bash
+pixi run ubio-autobox process <sample-uuid>
+```
+
+The default scientific database URL is
+`duckdb:///<data-root>/state/ubio.duckdb`. Override it with
+`UBIO_DATABASE_URL`; SQL Server support is installed with the `mssql` extra.
+
+## Deployment interface
+
+Deployment topology is owned outside this public application repository. A
+deployment workspace is expected to provide sibling `app`, `deploy`,
+`automation`, `private`, and `runtimes` paths. The application-owned image is
+built from the repository root with:
+
+```bash
+docker build -f packaging/docker/Dockerfile -t ubio-autobox:<git-sha> .
+```
+
+Deploy tooling should use these stable operational commands:
+
+```bash
+ubio-autobox validate-config --config /path/to/config.yml
+ubio-autobox migrate --config /path/to/config.yml
+ubio-autobox analysis-status <sample-id> --config /path/to/config.yml --json
+```
+
+`analysis-status` returns `0` for a succeeded current-pipeline analysis, `10`
+for terminal `failed` or `invalid` state, and `20` while the sample or analysis
+is absent, validated, queued, or running.
+
+When Bactopia uses the Docker profile, control-plane containers need the host
+Docker socket and host datasets/reference paths mounted at identical absolute
+paths. Docker-socket access is effectively host-level control. Restrict the
+deployment host and operators accordingly, or use a narrowly configured socket
+proxy.
+
+See [`docs/deployment-interface.md`](docs/deployment-interface.md) for the
+complete public contract. Compose, Dagster instance/workspace configuration,
+secrets, and target policy belong to the private deploy repository.
+
+## Slurm
+
+Start from `examples/config.slurm.yaml` and set `UBIO_CONFIG_FILE`.
+Slurm mode uses `dagster-slurm` per-asset execution. The five logical assets
+are represented by one graph-backed compute boundary, so a sample submits one
+allocation. Bactopia/Nextflow run locally inside that allocation; nested Slurm
+submission is not enabled. Shared storage and Apptainer are the v1 defaults;
+Bactopia's profile is named `singularity`, which Nextflow uses with the
+Apptainer runtime. `dagster-slurm` packages the locked Linux Pixi environment
+for the allocation; Apptainer itself is expected to be installed by the
+cluster.
+
+The single allocation contains explicit sequential checkpoints for Bactopia
+core, CheckM2, and Sylph. Each phase can have its own `max_cpus` and
+`max_memory` settings. A failed attempt records the completed phase and its
+output checksum; a retry validates that checkpoint and resumes with the next
+phase instead of rerunning completed scientific work.
+
+## Outputs
+
+Successful attempts are published immutably beneath:
+
+```text
+artifacts/samples/<sample_id>/analyses/<analysis_id>/published/attempt-0001/
+```
+
+Each attempt also contains an `attempt-manifest.json` at its root. It records
+input metadata and checksums, the Dagster/manual run correlation ID, attempt
+number, redacted commands, phase, return codes, and checksummed files. The
+database and Dagster Pipes logs expose the same phase updates:
+`validating_input`, `preparing`, `bactopia_core`, `checkm2`, `sylph`,
+`parsing_outputs`, `exporting_results`, `publishing_artifacts`, and terminal
+`succeeded`/`failed`. Failed attempts remain linked through
+`failed_workspace_uri` and `logs_uri`; retries retain prior attempt history.
+
+Each per-sample export contains:
+
+```text
+exports/<export_id>/
+├── manifest.json
+├── run.parquet
+├── assembly.parquet
+├── assembly_stats.parquet
+├── sylph.parquet
+├── checkm2.parquet
+├── sample_view.parquet
+└── sample_view.tsv
+```
+
+Extended tables retain local records and add `ubio_sample_id`,
+`ubio_analysis_id`, and `atb_schema_version`. Strict tables contain only ATB
+columns and exclude records without genuine public accessions. The per-sample
+`sample_view.tsv` is a human-readable extended view with accession columns
+removed for locally generated samples. Its `file://` URI is attached as
+`atb_sample_tsv_uri` to the completed Dagster materializations. The
+`atb_sample_export` materialization also includes a typed Dagster table preview
+(`atb_sample_preview`) and a compact Markdown summary (`atb_sample_summary`)
+for overview display. UUIDs are never substituted for accessions.
+
+See [`docs/architecture.md`](docs/architecture.md),
+[`docs/atb-field-mapping.md`](docs/atb-field-mapping.md), and
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).

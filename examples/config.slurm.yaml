@@ -1,0 +1,47 @@
+paths:
+  incoming_root: /shared/ubio-autobox/incoming
+  artifact_root: /shared/ubio-autobox/artifacts
+  cache_root: /shared/ubio-autobox/cache
+database:
+  url: duckdb:////shared/ubio-autobox/state/ubio.duckdb
+sensor:
+  interval_seconds: 30
+  stability_observations: 2
+bactopia:
+  version: 4.0.0
+  executable: bactopia
+  profile: singularity
+  runner: subprocess
+  max_cpus: 16
+  max_memory: 64.GB
+  core_max_cpus: 16
+  core_max_memory: 64.GB
+  checkm2_max_cpus: 16
+  checkm2_max_memory: 64.GB
+  sylph_max_cpus: 16
+  sylph_max_memory: 64.GB
+  image: null
+  container_digest: null
+  nextflow_version: 26.04.6
+  database_versions: {}
+  checkm2_args:
+    - --checkm2_db=/shared/databases/checkm2
+  sylph_args:
+    - --sylph_db=/shared/databases/sylph/gtdb.syldb
+execution:
+  deployment: slurm
+  container_runtime: apptainer
+slurm:
+  host: login.cluster.example
+  port: 22
+  user: ubio-service
+  key_path: /run/secrets/slurm_ssh_key
+  partition: compute
+  account: project-account
+  qos: normal
+  wall_time: 08:00:00
+  cpus: 16
+  memory: 64G
+  remote_base: /shared/ubio-autobox/dagster-slurm
+  extra_sbatch_args: []
+atb_schema_version: 2025-05
